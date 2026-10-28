@@ -89,11 +89,69 @@ function slideTo(direction,update,selector='.swipezone'){
 }
 function bindPeriod(renderFn,which='offset'){
  const range=which==='bodyOffset'?S.bodyRange:S.sub==='weekly'?'1W':S.range;
- const shift=dir=>{if(slideBusy||range==='All'||dir>0&&S[which]>=0)return;slideTo(dir,()=>{S[which]+=dir;renderFn()})};
+ const allowed=dir=>range!=='All'&&!(dir>0&&S[which]>=0);
+ const shift=dir=>{if(slideBusy||!allowed(dir))return;slideTo(dir,()=>{S[which]+=dir;renderFn()})};
  document.querySelectorAll('[data-shift]').forEach(b=>b.onclick=()=>shift(Number(b.dataset.shift)));
- // Bind the entire content area so a swipe works even when the graph is empty.
- // Interactive inputs and buttons remain excluded.
- bindSwipe($('.app'),shift,{exclude:'input, button, select, textarea, a, label, .nav, .top, .tabs, .ranges'});
+ // Native-feeling interactive drag: the destination is visible *during* the gesture.
+ // Keep the fixed tab bar, header and inputs outside the moving viewport.
+ const area=$('.app');if(!area)return;
+ let gesture=null;
+ const excluded='input, button, select, textarea, a, label, .nav, .top, .tabs, .ranges, .settings-gear';
+ function dispose(){if(!gesture)return;gesture.overlay?.remove();gesture.zone?.classList.remove('drag-active');gesture=null;}
+ area.addEventListener('touchstart',e=>{
+   if(slideBusy||e.touches.length!==1||e.target.closest(excluded))return;
+   const t=e.touches[0];gesture={x:t.clientX,y:t.clientY,dx:0,mode:null,overlay:null,zone:area.querySelector('.swipezone')};
+ },{passive:true});
+ area.addEventListener('touchmove',e=>{
+   if(!gesture||e.touches.length!==1)return;
+   const t=e.touches[0],dx=t.clientX-gesture.x,dy=t.clientY-gesture.y;
+   if(!gesture.mode){
+     if(Math.max(Math.abs(dx),Math.abs(dy))<9)return;
+     if(Math.abs(dy)>Math.abs(dx)*1.15){dispose();return}
+     gesture.mode='horizontal';
+   }
+   if(e.cancelable)e.preventDefault();
+   const dir=dx<0?1:-1;
+   if(!allowed(dir)){if(gesture.overlay){gesture.overlay.remove();gesture.overlay=null}return}
+   if(!gesture.zone)return;
+   if(!gesture.overlay||gesture.dir!==dir){
+     gesture.overlay?.remove();gesture.dir=dir;
+     const zone=gesture.zone;
+     const before=zone.cloneNode(true);
+     // Render the neighboring period just long enough to capture its content.
+     // Restore the original view immediately, without saving any records.
+     S[which]+=dir;renderFn();
+     const after=document.querySelector('.swipezone')?.cloneNode(true);
+     S[which]-=dir;renderFn();
+     gesture.zone=document.querySelector('.swipezone');
+     if(!after)return;
+     const holder=document.createElement('div');holder.className='drag-overlay';
+     const current=document.createElement('div');current.className='drag-panel';current.append(...before.childNodes);
+     const next=document.createElement('div');next.className='drag-panel';next.append(...after.childNodes);
+     holder.append(current,next);gesture.zone.appendChild(holder);
+     gesture.overlay=holder;gesture.current=current;gesture.next=next;
+   }
+   const width=gesture.zone.getBoundingClientRect().width;
+   const x=Math.max(-width,Math.min(width,dx));gesture.dx=x;
+   gesture.current.style.transform=`translate3d(${x}px,0,0)`;
+   gesture.next.style.transform=`translate3d(${x+(dir>0?width:-width)}px,0,0)`;
+ },{passive:false});
+ area.addEventListener('touchend',e=>{
+   if(!gesture)return;
+   const g=gesture;
+   if(g.mode!=='horizontal'||!g.overlay){dispose();return}
+   const width=g.zone.getBoundingClientRect().width;
+   const commit=Math.abs(g.dx)>Math.min(75,width*.22);
+   const finalX=commit?(g.dir>0?-width:width):0;
+   const duration=commit?210:180;
+   g.current.style.transition=`transform ${duration}ms cubic-bezier(.22,1,.36,1)`;
+   g.next.style.transition=g.current.style.transition;
+   g.current.style.transform=`translate3d(${finalX}px,0,0)`;
+   g.next.style.transform=`translate3d(${finalX+(g.dir>0?width:-width)}px,0,0)`;
+   slideBusy=true;gesture=null;
+   setTimeout(()=>{g.overlay.remove();slideBusy=false;if(commit){S[which]+=g.dir;renderFn()}},duration+15);
+ },{passive:true});
+ area.addEventListener('touchcancel',dispose,{passive:true});
 }
 
 function chart(points,unit=''){if(!points.length)return `<div class="note">No recorded data in this period yet.</div>`;let width=340,height=155,pad=26,values=points.map(p=>p.value),lo=Math.min(...values),hi=Math.max(...values);if(lo===hi){lo-=Math.max(1,lo*.05);hi+=Math.max(1,hi*.05)}let coords=points.map((p,i)=>[pad+(points.length===1?.5:i/(points.length-1))*(width-2*pad),height-pad-(p.value-lo)/(hi-lo)*(height-2*pad)]);let poly=coords.map(p=>p.join(',')).join(' ');return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Trend chart with ${points.length} data points"><line x1="${pad}" x2="${width-pad}" y1="${height-pad}" y2="${height-pad}" stroke="#50535b"/><polyline points="${poly}" fill="none" stroke="var(--graph)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${coords.map(([x,y],i)=>`<circle cx="${x}" cy="${y}" r="3.5" fill="var(--graph)"><title>${esc(points[i].label)}: ${points[i].value} ${esc(unit)}</title></circle>`).join('')}<text x="${pad}" y="15" fill="#9ca1ad" font-size="11">${hi.toFixed(hi<10?1:0)} ${esc(unit)}</text><text x="${pad}" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points[0].label)}</text><text x="${width-pad}" text-anchor="end" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points.at(-1).label)}</text></svg>`}
