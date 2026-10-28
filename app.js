@@ -26,8 +26,8 @@ function getActivity(date){return rec('activity',date)||{id:'activity:'+date,typ
 function lastExercise(day,key,date){return S.records.filter(x=>x.type==='session'&&x.date<date&&x.day===day&&x.exercises?.[key]?.sets?.some(s=>valid(s.w)||valid(s.r))).sort((a,b)=>b.date.localeCompare(a.date))[0]?.exercises[key]?.sets||null}
 function exKey(day,i){return day+':'+i}
 function exData(day,i,date){const e=ROUTINES[day].ex[i],saved=getSession(date).exercises[exKey(day,i)];return {sets:saved?.sets||Array.from({length:e[1]},()=>({w:null,r:null})),prev:lastExercise(day,exKey(day,i),date)||e[2].map(a=>({w:a?.[0]??null,r:a?.[1]??null})),unit:e[3]||'reps'}}
-function nav(){return `<nav class="nav"><div class="navin">${[['gym','♧','Gym Log'],['progress','▥','Progress'],['body','⚖','Body Weight'],['data','▤','Data'],['settings','⚙','Settings']].map(([id,icon,label])=>`<button data-tab="${id}" class="${S.tab===id?'active':''}"><span class="symbol">${icon}</span>${label}</button>`).join('')}</div></nav>`}
-function shell(title,content){$('#app').innerHTML=`<main class="app"><header class="top"><h1>${title}</h1><span class="sub">Offline · Private</span></header>${content}</main>${nav()}`;bindGlobal()}
+function nav(){return `<nav class="nav"><div class="navin">${[['gym','♧','Gym Log'],['progress','▥','Progress'],['body','⚖','Body Weight'],['data','▤','Data']].map(([id,icon,label])=>`<button data-tab="${id}" class="${S.tab===id?'active':''}"><span class="symbol">${icon}</span>${label}</button>`).join('')}</div></nav>`}
+function shell(title,content){$('#app').innerHTML=`<main class="app"><header class="top"><h1>${title}</h1><div class="topright"><span class="sub">Offline · Private</span><button class="settings-gear ${S.tab==='settings'?'active':''}" data-tab="settings" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="M19.4 15a1.6 1.6 0 0 0 .32 1.77l.05.05-2 2-.05-.05a1.6 1.6 0 0 0-1.77-.32l-.09.04a1.6 1.6 0 0 0-.96 1.47V20h-2.8v-.04a1.6 1.6 0 0 0-.96-1.47l-.09-.04a1.6 1.6 0 0 0-1.77.32l-.05.05-2-2 .05-.05A1.6 1.6 0 0 0 7.6 15l-.04-.09a1.6 1.6 0 0 0-1.47-.96H6v-2.8h.09a1.6 1.6 0 0 0 1.47-.96l.04-.09a1.6 1.6 0 0 0-.32-1.77l-.05-.05 2-2 .05.05a1.6 1.6 0 0 0 1.77.32l.09-.04a1.6 1.6 0 0 0 .96-1.47V5h2.8v.04a1.6 1.6 0 0 0 .96 1.47l.09.04a1.6 1.6 0 0 0 1.77-.32l.05-.05 2 2-.05.05a1.6 1.6 0 0 0-.32 1.77l.04.09a1.6 1.6 0 0 0 1.47.96H21v2.8h-.09a1.6 1.6 0 0 0-1.47.96Z" transform="translate(-1 -1) scale(1.08)"/></svg></button></div></header>${content}</main>${nav()}`;bindGlobal()}
 function bindGlobal(){document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{S.tab=b.dataset.tab;S.offset=0;render()})}
 function daybar(){return `<div class="days">${DAYS.map((d,i)=>`<button class="${S.day===i?'active':''}" data-day="${i}" aria-label="${DAYFULL[i]}">${d}</button>`).join('')}</div>`}
 function personalRecord(day,i,date,sets){const key=exKey(day,i),unit=ROUTINES[day].ex[i][3]||'reps';if(unit==='sec')return '';const past=S.records.filter(r=>r.type==='session'&&r.date<date).flatMap(r=>r.exercises?.[key]?.sets||[]).filter(s=>valid(s.w)&&valid(s.r));const now=sets.filter(s=>valid(s.w)&&valid(s.r));if(!past.length||!now.length)return '';const maxW=Math.max(...past.map(s=>s.w)),maxE=Math.max(...past.map(s=>s.w*(1+s.r/30)));if(now.some(s=>s.w>maxW))return '🏆 New weight PR';if(now.some(s=>s.w*(1+s.r/30)>maxE))return '🏆 New estimated 1RM PR';if(now.some(s=>s.r>Math.max(0,...past.filter(p=>p.w===s.w).map(p=>p.r))&&past.some(p=>p.w===s.w)))return '🏆 New rep PR';return ''}
@@ -38,7 +38,7 @@ if(r.ex.length){html+=r.ex.map((e,i)=>setRows(day,i)).join('')}else html+=`<div 
 html+=cardioInputs()+`<p class="note section">Entries save automatically on this device. The first previous values are reference numbers transcribed from your screenshots, not dated historical sessions.</p>`;shell('Gym Log',html);
 document.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>{let current=parseDate(S.date),delta=Number(b.dataset.day)-dayIndex(current);S.date=dateStr(addDays(current,delta));render()});$('#workdate').onchange=e=>{if(!e.target.value)return;S.date=e.target.value;render()};$('#steps').oninput=e=>saveActivityField('steps',e.target.value);
 document.querySelectorAll('[data-set]').forEach(e=>e.oninput=()=>saveSet(+e.dataset.set,+e.dataset.index,e.dataset.field,e.value));document.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>changeSets(+b.dataset.add,1));document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>changeSets(+b.dataset.remove,-1));document.querySelectorAll('[data-cardio]').forEach(e=>e.oninput=()=>saveCardio(e.dataset.cardio,e.dataset.cfield,e.value));
-document.querySelectorAll('[data-copy-ex]').forEach(b=>b.onclick=()=>copyExercise(+b.dataset.copyEx));document.querySelectorAll('[data-status]').forEach(b=>b.onclick=()=>cycleStatus(+b.dataset.status));bindSwipe($('.days'),dir=>{S.date=dateStr(addDays(parseDate(S.date),dir));render()});bindSwipe($('.app'),dir=>{S.date=dateStr(addDays(parseDate(S.date),dir));render()},{exclude:'.days, input, button, select, textarea, .nav'});}
+document.querySelectorAll('[data-copy-ex]').forEach(b=>b.onclick=()=>copyExercise(+b.dataset.copyEx));document.querySelectorAll('[data-status]').forEach(b=>b.onclick=()=>cycleStatus(+b.dataset.status));bindSwipe($('.days'),dir=>{slideTo(dir,()=>{S.date=dateStr(addDays(parseDate(S.date),dir));render()},'.app')});bindSwipe($('.app'),dir=>{slideTo(dir,()=>{S.date=dateStr(addDays(parseDate(S.date),dir));render()},'.app')},{exclude:'.days, input, button, select, textarea, .nav'});}
 async function copyExercise(i){const day=dayIndex(parseDate(S.date)),key=exKey(day,i),r=getSession(S.date),previous=lastExercise(day,key,S.date)||ROUTINES[day].ex[i][2].map(a=>({w:a?.[0]??null,r:a?.[1]??null}));if(!previous.length){toast('No previous values for this exercise');return}const existing=r.exercises[key]?.sets||[];if(existing.some(s=>valid(s.w)||valid(s.r))&&!confirm('Replace current entries for this exercise?'))return;r.day=day;r.exercises[key]={...(r.exercises[key]||{}),sets:previous.map(s=>({...s}))};await updateRecord(r);render();toast('Exercise values copied')}
 async function cycleStatus(i){const day=dayIndex(parseDate(S.date)),r=getSession(S.date),key=exKey(day,i),entry=r.exercises[key]||{sets:exData(day,i,S.date).sets.map(s=>({...s}))};entry.status=entry.status==='done'?'skipped':entry.status==='skipped'?'progress':'done';r.day=day;r.exercises[key]=entry;r.completed=ROUTINES[day].ex.every((_,j)=>['done','skipped'].includes(r.exercises[exKey(day,j)]?.status))&&ROUTINES[day].ex.some((_,j)=>r.exercises[exKey(day,j)]?.status==='done');await updateRecord(r);render()}
 async function saveSet(i,j,field,value){let day=dayIndex(parseDate(S.date)),r=getSession(S.date),key=exKey(day,i);r.day=day;if(!r.exercises[key])r.exercises[key]={sets:exData(day,i,S.date).sets.map(x=>({...x})),status:'progress'};r.exercises[key].sets[j][field]=value===''?null:Number(value);await updateRecord(r)}
@@ -64,9 +64,30 @@ function bindSwipe(target,onMove,{exclude='input, button, select, textarea, a'}=
  },{passive:true});
  target.addEventListener('touchcancel',()=>{start=null},{passive:true});
 }
+function slideTo(direction,update,selector='.swipezone'){
+ const previous=document.querySelector(selector);
+ const snapshot=previous?.cloneNode(true);
+ update();
+ const next=document.querySelector(selector);
+ if(!snapshot||!next||window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ const parent=next.parentElement;
+ const position=getComputedStyle(parent).position;
+ if(position==='static')parent.style.position='relative';
+ const rect=next.getBoundingClientRect(),parentRect=parent.getBoundingClientRect();
+ snapshot.classList.add('slide-snapshot');
+ snapshot.style.cssText+=`;position:absolute;top:${rect.top-parentRect.top}px;left:${rect.left-parentRect.left}px;width:${rect.width}px;height:${rect.height}px;pointer-events:none;z-index:3;overflow:hidden;`;
+ parent.appendChild(snapshot);
+ const distance=direction>0?1:-1;
+ const duration=260;
+ const easing='cubic-bezier(.22,1,.36,1)';
+ const outgoing=snapshot.animate([{transform:'translateX(0)',opacity:1},{transform:`translateX(${-distance*34}%)`,opacity:0}],{duration,easing});
+ next.animate([{transform:`translateX(${distance*34}%)`,opacity:.4},{transform:'translateX(0)',opacity:1}],{duration,easing});
+ outgoing.onfinish=()=>snapshot.remove();
+ outgoing.oncancel=()=>snapshot.remove();
+}
 function bindPeriod(renderFn,which='offset'){
  const range=which==='bodyOffset'?S.bodyRange:S.sub==='weekly'?'1W':S.range;
- const shift=dir=>{if(range==='All'||dir>0&&S[which]>=0)return;S[which]+=dir;renderFn()};
+ const shift=dir=>{if(range==='All'||dir>0&&S[which]>=0)return;slideTo(dir,()=>{S[which]+=dir;renderFn()})};
  document.querySelectorAll('[data-shift]').forEach(b=>b.onclick=()=>shift(Number(b.dataset.shift)));
  bindSwipe($('.swipezone'),shift,{exclude:'input, button, select, textarea, a'});
 }
