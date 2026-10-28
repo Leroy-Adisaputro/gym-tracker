@@ -5,3 +5,6 @@
 .colorrow{display:flex;align-items:center;gap:10px}.colorpick{width:34px;height:34px;padding:0;border:0;background:transparent;cursor:pointer}.hexfield{width:108px;text-transform:uppercase}.days{touch-action:pan-y}.swipezone{touch-action:pan-y}
 
 .topright{display:flex;align-items:center;gap:9px}.settings-gear{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--fg);padding:6px}.settings-gear.active{border-color:var(--fg)}.swipezone{overflow:hidden}.slide-snapshot{user-select:none;touch-action:none;contain:paint}@media(prefers-reduced-motion:reduce){.slide-snapshot{display:none}}
+
+/* Stable app shell and bottom bar on iPhone, including short Body Weight pages. */
+html{min-height:100%;overflow-x:hidden}body{min-height:100dvh;overflow-x:hidden}.app{min-height:calc(100dvh - 2px);overflow-x:clip}.nav{position:fixed;bottom:0;left:0;right:0;transform:translateZ(0);-webkit-transform:translateZ(0);will-change:transform}.swipezone{touch-action:pan-y;overflow:hidden;min-height:120px}.slide-snapshot{will-change:transform,opacity}@media(prefers-reduced-motion:reduce){.slide-snapshot{display:none}}

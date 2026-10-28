@@ -49,7 +49,7 @@ async function copyPrevious(){let day=dayIndex(parseDate(S.date)),r=getSession(S
 function periodBounds(offset,range,anchor=new Date()){let now=new Date(anchor);if(range==='1W'){let s=addDays(monday(now),offset*7);return [s,addDays(s,6)]}if(range==='1M'){let s=new Date(now.getFullYear(),now.getMonth()+offset,1);return [s,new Date(s.getFullYear(),s.getMonth()+1,0)]}if(range==='3M'||range==='6M'){let n=range==='3M'?3:6;let base=Math.floor(now.getMonth()/n)*n;let s=new Date(now.getFullYear(),base+offset*n,1);return [s,new Date(s.getFullYear(),s.getMonth()+n,0)]}if(range==='1Y'){let s=new Date(now.getFullYear()+offset,0,1);return [s,new Date(s.getFullYear(),11,31)]}return [new Date(2000,0,1),now]}
 function periodLabel(a,b,range){if(range==='All')return 'All recorded history';if(range==='1M')return fmt(a,{month:'long',year:'numeric'});if(range==='1Y')return String(a.getFullYear());return `${fmt(a,{month:'short',day:'numeric',year:'numeric'})} – ${fmt(b,{month:'short',day:'numeric',year:'numeric'})}`}
 function periodNav(range,offset,type){let [a,b]=periodBounds(offset,range),future=a>new Date();return `<div class="period"><button data-shift="-1" aria-label="Previous period">‹</button><strong>${periodLabel(a,b,range)}</strong><button data-shift="1" ${range==='All'||offset>=0?'disabled':''} aria-label="Next period">›</button></div>`}
-function bindSwipe(target,onMove,{exclude='input, button, select, textarea, a'}={}){
+function bindSwipe(target,onMove,{exclude='input, button, select, textarea, a, label'}={}){
  if(!target)return;
  let start=null;
  target.addEventListener('touchstart',e=>{
@@ -60,36 +60,40 @@ function bindSwipe(target,onMove,{exclude='input, button, select, textarea, a'}=
    if(!start||!e.changedTouches.length)return;
    const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;
    start=null;
-   if(Math.abs(dx)>45&&Math.abs(dx)>Math.abs(dy)*1.35)onMove(dx>0?-1:1);
+   if(Math.abs(dx)>=45&&Math.abs(dx)>Math.abs(dy)*1.25)onMove(dx>0?-1:1);
  },{passive:true});
  target.addEventListener('touchcancel',()=>{start=null},{passive:true});
 }
+let slideBusy=false;
 function slideTo(direction,update,selector='.swipezone'){
- const previous=document.querySelector(selector);
- const snapshot=previous?.cloneNode(true);
+ if(slideBusy)return;
+ const old=document.querySelector(selector);
+ if(!old){update();return}
+ // Clone only the swipable content, never the fixed bottom navigation.
+ const snapshot=old.cloneNode(true);
+ const oldHeight=old.getBoundingClientRect().height;
  update();
  const next=document.querySelector(selector);
- if(!snapshot||!next||window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ if(!next||window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const parent=next.parentElement;
- const position=getComputedStyle(parent).position;
- if(position==='static')parent.style.position='relative';
- const rect=next.getBoundingClientRect(),parentRect=parent.getBoundingClientRect();
+ const originalPosition=parent.style.position;
+ if(getComputedStyle(parent).position==='static')parent.style.position='relative';
  snapshot.classList.add('slide-snapshot');
- snapshot.style.cssText+=`;position:absolute;top:${rect.top-parentRect.top}px;left:${rect.left-parentRect.left}px;width:${rect.width}px;height:${rect.height}px;pointer-events:none;z-index:3;overflow:hidden;`;
+ snapshot.style.cssText+=`;position:absolute;top:${next.offsetTop}px;left:${next.offsetLeft}px;width:${next.offsetWidth}px;height:${oldHeight}px;pointer-events:none;z-index:3;overflow:hidden;`;
  parent.appendChild(snapshot);
- const distance=direction>0?1:-1;
- const duration=260;
- const easing='cubic-bezier(.22,1,.36,1)';
- const outgoing=snapshot.animate([{transform:'translateX(0)',opacity:1},{transform:`translateX(${-distance*34}%)`,opacity:0}],{duration,easing});
- next.animate([{transform:`translateX(${distance*34}%)`,opacity:.4},{transform:'translateX(0)',opacity:1}],{duration,easing});
- outgoing.onfinish=()=>snapshot.remove();
- outgoing.oncancel=()=>snapshot.remove();
+ slideBusy=true;
+ const distance=direction>0?1:-1, duration=280, easing='cubic-bezier(.22,1,.36,1)';
+ const animations=[snapshot.animate([{transform:'translateX(0)',opacity:1},{transform:`translateX(${-distance*100}%)`,opacity:0}],{duration,easing}),next.animate([{transform:`translateX(${distance*100}%)`,opacity:.7},{transform:'translateX(0)',opacity:1}],{duration,easing})];
+ const cleanup=()=>{snapshot.remove();parent.style.position=originalPosition;slideBusy=false};
+ Promise.all(animations.map(x=>x.finished.catch(()=>{}))).then(cleanup);
 }
 function bindPeriod(renderFn,which='offset'){
  const range=which==='bodyOffset'?S.bodyRange:S.sub==='weekly'?'1W':S.range;
- const shift=dir=>{if(range==='All'||dir>0&&S[which]>=0)return;slideTo(dir,()=>{S[which]+=dir;renderFn()})};
+ const shift=dir=>{if(slideBusy||range==='All'||dir>0&&S[which]>=0)return;slideTo(dir,()=>{S[which]+=dir;renderFn()})};
  document.querySelectorAll('[data-shift]').forEach(b=>b.onclick=()=>shift(Number(b.dataset.shift)));
- bindSwipe($('.swipezone'),shift,{exclude:'input, button, select, textarea, a'});
+ // Bind the entire content area so a swipe works even when the graph is empty.
+ // Interactive inputs and buttons remain excluded.
+ bindSwipe($('.app'),shift,{exclude:'input, button, select, textarea, a, label, .nav, .top, .tabs, .ranges'});
 }
 
 function chart(points,unit=''){if(!points.length)return `<div class="note">No recorded data in this period yet.</div>`;let width=340,height=155,pad=26,values=points.map(p=>p.value),lo=Math.min(...values),hi=Math.max(...values);if(lo===hi){lo-=Math.max(1,lo*.05);hi+=Math.max(1,hi*.05)}let coords=points.map((p,i)=>[pad+(points.length===1?.5:i/(points.length-1))*(width-2*pad),height-pad-(p.value-lo)/(hi-lo)*(height-2*pad)]);let poly=coords.map(p=>p.join(',')).join(' ');return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Trend chart with ${points.length} data points"><line x1="${pad}" x2="${width-pad}" y1="${height-pad}" y2="${height-pad}" stroke="#50535b"/><polyline points="${poly}" fill="none" stroke="var(--graph)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${coords.map(([x,y],i)=>`<circle cx="${x}" cy="${y}" r="3.5" fill="var(--graph)"><title>${esc(points[i].label)}: ${points[i].value} ${esc(unit)}</title></circle>`).join('')}<text x="${pad}" y="15" fill="#9ca1ad" font-size="11">${hi.toFixed(hi<10?1:0)} ${esc(unit)}</text><text x="${pad}" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points[0].label)}</text><text x="${width-pad}" text-anchor="end" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points.at(-1).label)}</text></svg>`}
