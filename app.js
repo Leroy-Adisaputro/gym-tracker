@@ -89,35 +89,35 @@ function exData(day,i,date){const e=ROUTINES[day].ex[i],saved=getSession(date).e
 function nav(){return `<nav class="nav"><div class="navin">${[['gym','♧','Gym Log'],['progress','▥','Progress'],['body','⚖','Body Weight'],['data','▤','Data']].map(([id,icon,label])=>`<button data-tab="${id}" class="${S.tab===id?'active':''}"><span class="symbol">${icon}</span>${label}</button>`).join('')}</div></nav>`}
 function shell(title,content){$('#app').innerHTML=`<main class="app"><header class="top"><h1>${title}</h1><div class="topright"><span class="sub">Offline · Private</span><button class="settings-gear ${S.tab==='settings'?'active':''}" data-tab="settings" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="M19.4 15a1.6 1.6 0 0 0 .32 1.77l.05.05-2 2-.05-.05a1.6 1.6 0 0 0-1.77-.32l-.09.04a1.6 1.6 0 0 0-.96 1.47V20h-2.8v-.04a1.6 1.6 0 0 0-.96-1.47l-.09-.04a1.6 1.6 0 0 0-1.77.32l-.05.05-2-2 .05-.05A1.6 1.6 0 0 0 7.6 15l-.04-.09a1.6 1.6 0 0 0-1.47-.96H6v-2.8h.09a1.6 1.6 0 0 0 1.47-.96l.04-.09a1.6 1.6 0 0 0-.32-1.77l-.05-.05 2-2 .05.05a1.6 1.6 0 0 0 1.77.32l.09-.04a1.6 1.6 0 0 0 .96-1.47V5h2.8v.04a1.6 1.6 0 0 0 .96 1.47l.09.04a1.6 1.6 0 0 0 1.77-.32l.05-.05 2 2-.05.05a1.6 1.6 0 0 0-.32 1.77l.04.09a1.6 1.6 0 0 0 1.47.96H21v2.8h-.09a1.6 1.6 0 0 0-1.47.96Z" transform="translate(-1 -1) scale(1.08)"/></svg></button></div></header>${content}</main>${nav()}`;bindGlobal()}
 function bindGlobal(){document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{S.tab=b.dataset.tab;S.offset=0;render()})}
-function daybar(){return `<div class="days">${DAYS.map((d,i)=>`<button class="${dayIndex(parseDate(S.date))===i?'active':''}" data-day="${i}" aria-label="${DAYFULL[i]}">${d}</button>`).join('')}</div>`}
+function daybar(){return `<div class="days">${DAYS.map((d,i)=>`<button type="button" class="${dayIndex(parseDate(S.date))===i?'active':''}" data-day="${i}" aria-label="${DAYFULL[i]}">${d}</button>`).join('')}</div>`}
 function personalRecord(day,i,date,sets){const key=exKey(day,i),unit=ROUTINES[day].ex[i][3]||'reps';if(unit==='sec')return '';const past=workoutHistory(date).past.get(key)||[];const now=sets.filter(s=>valid(s.w)&&valid(s.r));if(!past.length||!now.length)return '';const maxW=Math.max(...past.map(s=>s.w)),maxE=Math.max(...past.map(s=>s.w*(1+s.r/30)));if(now.some(s=>s.w>maxW))return '🏆 New weight PR';if(now.some(s=>s.w*(1+s.r/30)>maxE))return '🏆 New estimated 1RM PR';if(now.some(s=>s.r>Math.max(0,...past.filter(p=>p.w===s.w).map(p=>p.r))&&past.some(p=>p.w===s.w)))return '🏆 New rep PR';return ''}
 function setRows(day,i){const e=ROUTINES[day].ex[i],d=exData(day,i,S.date),pr=personalRecord(day,i,S.date,d.sets),status=getSession(S.date).exercises[exKey(day,i)]?.status||'progress';return `<section class="line"><div class="section-title"><div class="stack"><strong>${esc(e[0])}</strong><span class="sub">${d.sets.length} sets</span></div><div class="exercise-actions"><button class="iconbtn" data-copy-ex="${i}" aria-label="Copy previous exercise" title="Copy previous exercise"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="iconbtn" data-add="${i}" aria-label="Add set">+</button><button class="iconbtn" data-remove="${i}" aria-label="Remove set" ${d.sets.length<=1?'disabled':''}>−</button><button class="statusbtn ${status}" data-status="${i}" title="Tap to cycle: in progress, done, skipped" aria-label="${status}" aria-pressed="${status==='done'}">${status==='done'?'✓':status==='skipped'?'✕':'●'}</button></div></div><div class="setgrid"><span class="heading">Set</span><span class="heading">Previous</span><span class="heading">Weight</span><span class="heading">${d.unit==='sec'?'Seconds':'Reps'}</span>${d.sets.map((set,j)=>`<span class="small muted">${j+1}</span><span class="previous">${d.prev[j]?(valid(d.prev[j].w)?d.prev[j].w:'—')+' × '+(valid(d.prev[j].r)?d.prev[j].r:'—'):'—'}</span><input class="field" type="number" inputmode="decimal" min="0" step="any" data-set="${i}" data-index="${j}" data-field="w" value="${set.w??''}" placeholder="${d.prev[j]?.w??'lb'}" aria-label="${esc(e[0])} set ${j+1} weight"><input class="field" type="number" inputmode="numeric" min="0" step="1" data-set="${i}" data-index="${j}" data-field="r" value="${set.r??''}" placeholder="${d.prev[j]?.r??d.unit}" aria-label="${esc(e[0])} set ${j+1} ${d.unit}">`).join('')}</div>${pr?`<div class="small good" style="margin-top:8px">${pr}</div>`:''}</section>`}
 function cardioInputs(){return `<div class="section"><div class="section-title"><h2>Cardio <span class="sub">Optional</span></h2></div>${[['run','Running'],['swim','Swimming'],['cycle','Cycling']].map(([k,name])=>{const v=getActivity(S.date)[k]||{};return `<div class="line"><strong>${name}</strong><div class="row" style="margin-top:9px"><label class="stack small muted" style="flex:1">Distance (${k==='swim'?'m':'km'})<input class="field" type="number" inputmode="decimal" min="0" step="any" data-cardio="${k}" data-cfield="distance" value="${v.distance??''}" placeholder="—"></label><label class="stack small muted" style="flex:1">Minutes<input class="field" type="number" inputmode="decimal" min="0" step="any" data-cardio="${k}" data-cfield="minutes" value="${v.minutes??''}" placeholder="—"></label></div></div>`}).join('')}</div>`}
 function gym(){const d=parseDate(S.date),day=dayIndex(d),r=ROUTINES[day],a=getActivity(S.date);let html=`${daybar()}<div class="section-title section"><div class="stack"><h2>${r.name}</h2><span class="sub">${fmt(d)} · ${DAYFULL[day]}</span></div><input type="date" id="workdate" class="field input-narrow" value="${S.date}" aria-label="Workout date"></div><div class="line row"><strong>👟 Steps</strong><input id="steps" class="field input-narrow" type="number" min="0" step="1" inputmode="numeric" placeholder="Enter steps" value="${a.steps??''}"></div><div class="line"><strong>🎒 Rucking <span class="sub">Optional</span></strong><div class="row" style="margin-top:9px"><label class="stack small muted" style="flex:1">Rucking steps<input class="field" type="number" min="0" step="1" inputmode="numeric" data-ruck="steps" value="${a.ruck?.steps??''}" placeholder="—"></label><label class="stack small muted" style="flex:1">Pack weight (lb)<input class="field" type="number" min="0" step="any" inputmode="decimal" data-ruck="weight" value="${a.ruck?.weight??''}" placeholder="—"></label></div><p class="small muted" style="margin:8px 0 0">Rucking steps are recorded separately and are not added to daily steps.</p></div>`;
 if(r.ex.length){html+=r.ex.map((e,i)=>setRows(day,i)).join('')}else html+=`<div class="note section">Rest day. Record steps or any cardio you actually complete; empty fields are not treated as zero.</div>`;
 html+=cardioInputs()+`<p class="note section">Entries save automatically on this device. The first previous values are reference numbers transcribed from your screenshots, not dated historical sessions.</p>`;shell('Gym Log',html);
-document.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>{let current=parseDate(S.date),delta=Number(b.dataset.day)-dayIndex(current);S.date=dateStr(addDays(current,delta));render()});$('#workdate').onchange=e=>{if(!e.target.value)return;S.date=e.target.value;render()};$('#steps').oninput=e=>saveActivityField('steps',e.target.value);document.querySelectorAll('[data-ruck]').forEach(e=>e.oninput=()=>saveRuck(e.dataset.ruck,e.value));
+document.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>{const current=parseDate(S.date),delta=Number(b.dataset.day)-dayIndex(current);selectDay(dateStr(addDays(current,delta)))});$('#workdate').onchange=e=>selectDay(e.target.value);$('#steps').oninput=e=>saveActivityField('steps',e.target.value);document.querySelectorAll('[data-ruck]').forEach(e=>e.oninput=()=>saveRuck(e.dataset.ruck,e.value));
 document.querySelectorAll('[data-set]').forEach(e=>e.oninput=()=>saveSet(+e.dataset.set,+e.dataset.index,e.dataset.field,e.value));document.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>changeSets(+b.dataset.add,1));document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>changeSets(+b.dataset.remove,-1));document.querySelectorAll('[data-cardio]').forEach(e=>e.oninput=()=>saveCardio(e.dataset.cardio,e.dataset.cfield,e.value));
 document.querySelectorAll('[data-copy-ex]').forEach(b=>b.onclick=()=>copyExercise(+b.dataset.copyEx));document.querySelectorAll('[data-status]').forEach(b=>b.onclick=()=>cycleStatus(+b.dataset.status));bindGymSwipe();}
 function bindGymSwipe(){
- // A short sliding transition between days, without touching the fixed nav.
  const area=document.querySelector('.app');let start=null;
  area.addEventListener('touchstart',e=>{
-   if(e.touches.length!==1||e.target.closest('input,button,select,textarea,.nav'))return;
+   if(e.touches.length!==1||e.target.closest('input,button,select,textarea,a,label,.nav'))return;
    start={x:e.touches[0].clientX,y:e.touches[0].clientY};
  },{passive:true});
  area.addEventListener('touchend',e=>{
    if(!start||!e.changedTouches.length)return;
-   const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;start=null;
-   if(Math.abs(dx)<55||Math.abs(dx)<Math.abs(dy)*1.3)return;
-   const dir=dx<0?1:-1;
-   S.date=dateStr(addDays(parseDate(S.date),dir));render();
-   const next=document.querySelector('.app');
-   if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
-   // Only animate the newly rendered content; no expensive duplicate live DOM.
-   next.animate([{transform:`translateX(${dir*24}px)`,opacity:.6},{transform:'translateX(0)',opacity:1}],{duration:190,easing:'ease-out'});
+   const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;
+   start=null;
+   if(Math.abs(dx)<65||Math.abs(dx)<Math.abs(dy)*1.4)return;
+   selectDay(dateStr(addDays(parseDate(S.date),dx<0?1:-1)));
  },{passive:true});
  area.addEventListener('touchcancel',()=>{start=null},{passive:true});
+}
+function selectDay(date){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return;
+ S.date=date;
+ render();
 }
 async function copyExercise(i){const day=dayIndex(parseDate(S.date)),key=exKey(day,i),r=getSession(S.date),previous=lastExercise(day,key,S.date)||ROUTINES[day].ex[i][2].map(a=>({w:a?.[0]??null,r:a?.[1]??null}));if(!previous.length){toast('No previous values for this exercise');return}const existing=r.exercises[key]?.sets||[];if(existing.some(s=>valid(s.w)||valid(s.r))&&!confirm('Replace current entries for this exercise?'))return;r.day=day;r.exercises[key]={...(r.exercises[key]||{}),sets:previous.map(s=>({...s}))};await updateRecord(r);render();toast('Exercise values copied')}
 async function cycleStatus(i){const day=dayIndex(parseDate(S.date)),r=getSession(S.date),key=exKey(day,i),entry=r.exercises[key]||{sets:exData(day,i,S.date).sets.map(s=>({...s}))};entry.status=entry.status==='done'?'skipped':entry.status==='skipped'?'progress':'done';r.day=day;r.exercises[key]=entry;r.completed=ROUTINES[day].ex.every((_,j)=>['done','skipped'].includes(r.exercises[exKey(day,j)]?.status))&&ROUTINES[day].ex.some((_,j)=>r.exercises[exKey(day,j)]?.status==='done');await updateRecord(r);render()}
@@ -138,81 +138,38 @@ function periodLabel(a,b,range){if(range==='All')return 'All recorded history';i
 function periodNav(range,offset,type){let [a,b]=periodBounds(offset,range),future=a>new Date();return `<div class="period"><button data-shift="-1" aria-label="Previous period">‹</button><strong>${periodLabel(a,b,range)}</strong><button data-shift="1" ${range==='All'||offset>=0?'disabled':''} aria-label="Next period">›</button></div>`}
 // Live swipe uses a frozen DOM snapshot and pure adjacent-period markup.
 // Never replace the touched DOM element until the gesture has ended (iOS Safari).
-let slideBusy=false;
-function periodPreview(which,dir){
- const old=S[which];let markup;
- try{
-   S[which]=old+dir;
-   if(which==='bodyOffset'){
-     const [a,b]=periodBounds(S.bodyOffset,S.bodyRange);
-     const points=S.records.filter(r=>r.type==='body'&&r.date>=dateStr(a)&&r.date<=dateStr(b))
-       .sort((x,y)=>x.date.localeCompare(y.date)).map(r=>({label:r.date,value:r.weight}));
-     markup=`<div class="swipezone">${periodNav(S.bodyRange,S.bodyOffset)}${chart(points,'kg')}</div>`;
-   }else markup=S.sub==='weekly'?weekly():overall();
- }finally{S[which]=old}
- const holder=document.createElement('div');holder.innerHTML=markup;
- return holder.querySelector('.swipezone');
-}
-function liveSwipe(area,allowed,preview,commit,{exclude='input,button,select,textarea,a,label'}={}){
- if(!area)return;
- let g=null;
- const clear=()=>{if(g?.overlay)g.overlay.remove();g=null};
- area.addEventListener('touchstart',e=>{
-   if(slideBusy||e.touches.length!==1||e.target.closest(exclude))return;
-   const t=e.touches[0];g={x:t.clientX,y:t.clientY,dx:0,mode:null,neighbors:{}};
- },{passive:true});
- area.addEventListener('touchmove',e=>{
-   if(!g||e.touches.length!==1)return;
-   const t=e.touches[0],dx=t.clientX-g.x,dy=t.clientY-g.y;
-   if(!g.mode){
-     if(Math.max(Math.abs(dx),Math.abs(dy))<9)return;
-     if(Math.abs(dy)>Math.abs(dx)){clear();return}
-     g.mode='horizontal';
-   }
-   if(e.cancelable)e.preventDefault();
-   const dir=dx<0?1:-1;
-   if(!allowed(dir)){g.overlay?.remove();g.overlay=null;g.dir=null;return}
-   if(!g.overlay||g.dir!==dir){
-     g.overlay?.remove();
-     const next=g.neighbors[dir]||(g.neighbors[dir]=preview(dir));if(!next)return;
-     const overlay=document.createElement('div');overlay.className='drag-overlay';
-     const current=document.createElement('div');current.className='drag-panel';
-     const incoming=document.createElement('div');incoming.className='drag-panel';
-     const before=area.cloneNode(true);
-     current.replaceChildren(...before.childNodes);
-     incoming.replaceChildren(...next.childNodes);
-     overlay.append(current,incoming);area.appendChild(overlay);
-     Object.assign(g,{dir,overlay,current,incoming});
-   }
-   const w=area.clientWidth,x=Math.max(-w,Math.min(w,dx));g.dx=x;
-   g.current.style.transform=`translate3d(${x}px,0,0)`;
-   g.incoming.style.transform=`translate3d(${x+(dir>0?w:-w)}px,0,0)`;
- },{passive:false});
- area.addEventListener('touchend',()=>{
-   if(!g)return;
-   const done=g;g=null;
-   if(!done.overlay)return;
-   const w=area.clientWidth,shouldCommit=Math.abs(done.dx)>Math.min(65,w*.2);
-   const end=shouldCommit?(done.dir>0?-w:w):0;
-   const duration=shouldCommit?200:160;
-   for(const panel of [done.current,done.incoming])panel.style.transition=`transform ${duration}ms cubic-bezier(.22,1,.36,1)`;
-   done.current.style.transform=`translate3d(${end}px,0,0)`;
-   done.incoming.style.transform=`translate3d(${end+(done.dir>0?w:-w)}px,0,0)`;
-   slideBusy=true;
-   setTimeout(()=>{done.overlay.remove();slideBusy=false;if(shouldCommit&&area.isConnected)commit(done.dir)},duration+25);
- },{passive:true});
- area.addEventListener('touchcancel',clear,{passive:true});
-}
+// Simple, non-blocking swipe: no DOM clones, overlays, or global animation locks.
 function bindPeriod(renderFn,which='offset'){
+ const area=document.querySelector('.swipezone');
  const range=which==='bodyOffset'?S.bodyRange:S.sub==='weekly'?'1W':S.range;
  const allowed=dir=>range!=='All'&&!(dir>0&&S[which]>=0);
- const change=dir=>{if(slideBusy||!allowed(dir))return;S[which]+=dir;renderFn()};
+ const change=dir=>{
+   if(!allowed(dir))return;
+   S[which]+=dir;
+   renderFn();
+   const next=document.querySelector('.swipezone');
+   if(next&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
+     next.animate([{opacity:.7,transform:`translateX(${dir>0?18:-18}px)`},{opacity:1,transform:'translateX(0)'}],{duration:160,easing:'ease-out'});
+   }
+ };
  document.querySelectorAll('[data-shift]').forEach(b=>b.onclick=()=>change(Number(b.dataset.shift)));
- liveSwipe(document.querySelector('.swipezone'),allowed,dir=>periodPreview(which,dir),change);
+ if(!area)return;
+ let start=null;
+ area.addEventListener('touchstart',e=>{
+   if(e.touches.length!==1||e.target.closest('input,button,select,textarea,a,label'))return;
+   start={x:e.touches[0].clientX,y:e.touches[0].clientY};
+ },{passive:true});
+ area.addEventListener('touchend',e=>{
+   if(!start||!e.changedTouches.length)return;
+   const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;
+   start=null;
+   if(Math.abs(dx)>=60&&Math.abs(dx)>Math.abs(dy)*1.4)change(dx<0?1:-1);
+ },{passive:true});
+ area.addEventListener('touchcancel',()=>{start=null},{passive:true});
 }
 function chart(points,unit=''){if(!points.length)return `<div class="note">No recorded data in this period yet.</div>`;let width=340,height=155,pad=26,values=points.map(p=>p.value),lo=Math.min(...values),hi=Math.max(...values);if(lo===hi){lo-=Math.max(1,lo*.05);hi+=Math.max(1,hi*.05)}let coords=points.map((p,i)=>[pad+(points.length===1?.5:i/(points.length-1))*(width-2*pad),height-pad-(p.value-lo)/(hi-lo)*(height-2*pad)]);let poly=coords.map(p=>p.join(',')).join(' ');return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Trend chart with ${points.length} data points"><line x1="${pad}" x2="${width-pad}" y1="${height-pad}" y2="${height-pad}" stroke="#50535b"/><polyline points="${poly}" fill="none" stroke="var(--graph)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${coords.map(([x,y],i)=>({x,y,i})).filter(p=>coords.length<=180||p.i===0||p.i===coords.length-1||p.i%Math.ceil(coords.length/180)===0).map(({x,y,i})=>`<circle cx="${x}" cy="${y}" r="3.5" fill="var(--graph)"><title>${esc(points[i].label)}: ${points[i].value} ${esc(unit)}</title></circle>`).join('')}<text x="${pad}" y="15" fill="#9ca1ad" font-size="11">${hi.toFixed(hi<10?1:0)} ${esc(unit)}</text><text x="${pad}" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points[0].label)}</text><text x="${width-pad}" text-anchor="end" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points.at(-1).label)}</text></svg>`}
 function stepsSummary(a,b){let rows=datesBetween(dateStr(a),dateStr(b)),acts=rows.filter(x=>x.type==='activity'&&valid(x.steps)),total=acts.reduce((n,x)=>n+x.steps,0),goal=S.settings.goal,done=0,missed=0,pending=0;for(let d=new Date(a);d<=b;d=addDays(d,1)){let ix=dayIndex(d);if(ix===3||ix===6)continue;let date=dateStr(d),session=rec('session',date);if(session?.completed)done++;else if(d<new Date(new Date().toDateString()))missed++;else pending++}let pct=Math.round(total/goal*100);return `<div class="metrics"><div class="metric"><b>${total.toLocaleString()}</b><span>Steps logged</span></div><div class="metric"><b>${done}/5</b><span>Workouts done</span></div><div class="metric"><b>${missed}</b><span>Missed days</span></div></div><div class="row"><strong>Weekly step goal</strong><span>${pct}%</span></div><div class="bar"><div style="width:${Math.min(100,pct)}%"></div></div><div class="row small muted"><span>${total.toLocaleString()} / ${goal.toLocaleString()} steps</span><span>${Math.max(0,goal-total).toLocaleString()} remaining</span></div><div class="row section"><label class="small muted" for="goal">Edit weekly goal</label><input id="goal" class="field input-narrow" type="number" min="1" step="1" value="${goal}"></div><h3 class="section">Daily steps</h3><div class="entrylist">${Array.from({length:7},(_,i)=>{let date=dateStr(addDays(a,i)),v=rec('activity',date)?.steps;return `<div class="row"><span>${DAYS[i]} <span class="sub">${date}</span></span><span>${valid(v)?v.toLocaleString():'Not logged'}</span></div>`}).join('')}</div><p class="note section">${pending} scheduled workouts pending. Missing step entries are excluded, not counted as zero. Rest days are not missed workouts.</p>`}
-function weekly(){let [a,b]=periodBounds(S.offset,'1W'),rucks=datesBetween(dateStr(a),dateStr(b)).filter(r=>r.type==='activity'&&r.ruck),ruckSteps=rucks.reduce((n,r)=>n+(valid(r.ruck.steps)?r.ruck.steps:0),0),ruckCount=rucks.filter(r=>valid(r.ruck.steps)||valid(r.ruck.weight)).length;return `<div class="swipezone">${periodNav('1W',S.offset)}${stepsSummary(a,b)}<h3 class="section">Rucking</h3><div class="metrics"><div class="metric"><b>${ruckSteps.toLocaleString()}</b><span>Rucking steps</span></div><div class="metric"><b>${ruckCount}</b><span>Logged days</span></div></div><p class="small muted">Rucking steps are included only in this separate total, not added to daily steps.</p><h3 class="section">Cardio completed</h3>${cardioList(a,b)}</div>`}
+function weekly(){let [a,b]=periodBounds(S.offset,'1W'),rucks=datesBetween(dateStr(a),dateStr(b)).filter(r=>r&&r.type==='activity'&&r.ruck&&typeof r.ruck==='object'),ruckSteps=rucks.reduce((n,r)=>n+(valid(r.ruck.steps)?r.ruck.steps:0),0),ruckCount=rucks.filter(r=>valid(r.ruck.steps)||valid(r.ruck.weight)).length;return `<div class="swipezone">${periodNav('1W',S.offset)}${stepsSummary(a,b)}<h3 class="section">Rucking</h3><div class="metrics"><div class="metric"><b>${ruckSteps.toLocaleString()}</b><span>Rucking steps</span></div><div class="metric"><b>${ruckCount}</b><span>Logged days</span></div></div><p class="small muted">Rucking steps are included only in this separate total, not added to daily steps.</p><h3 class="section">Cardio completed</h3>${cardioList(a,b)}</div>`}
 function cardioList(a,b){
  const entries=[];
  for(const r of datesBetween(dateStr(a),dateStr(b)).filter(x=>x.type==='activity')){
@@ -294,6 +251,14 @@ async function exportCSV(){
  const csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');
  download(csv,'gym-log-export-'+dateStr(new Date())+'.csv','text/csv');toast('CSV prepared');
 }
-function render(){if(S.tab==='gym')gym();else if(S.tab==='progress')progress();else if(S.tab==='body')body();else if(S.tab==='data')dataPage();else settingsPage()}
+function render(){
+ try{
+  if(S.tab==='gym')gym();else if(S.tab==='progress')progress();else if(S.tab==='body')body();else if(S.tab==='data')dataPage();else settingsPage();
+ }catch(err){
+  console.error('Gym Tracker screen error:',S.tab,err);
+  shell('Screen error',`<div class="note section">This screen could not load. Your saved workouts have not been deleted.<p class="small">${esc(err.message)}</p><button class="action" id="return-gym">Return to Gym Log</button></div>`);
+  $('#return-gym').onclick=()=>{S.tab='gym';render()};
+ }
+}
 async function init(){try{db=await openDB();S.records=await all();S.settings={...S.settings,...(S.records.find(x=>x.id==='settings')||{})};applyTheme();render();if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').then(reg=>{document.addEventListener('visibilitychange',()=>{if(!document.hidden)reg.update().catch(()=>{})});navigator.serviceWorker.addEventListener('controllerchange',()=>{toast('App updated. Reload when convenient.');});}).catch(()=>{});let last=localStorage.getItem('gym-last-backup');if(S.records.length>3&&(!last||Date.now()-new Date(last).getTime()>(S.settings.reminder||7)*86400000))setTimeout(()=>toast('Backup reminder: export your data from the Data tab'),1500)}catch(err){$('#app').innerHTML=`<main class="app"><h1>Storage unavailable</h1><p>This app needs IndexedDB. Open it in Safari or Chrome, outside private browsing, and ensure browser storage is enabled.</p><p>${esc(err.message)}</p></main>`}}
 init();

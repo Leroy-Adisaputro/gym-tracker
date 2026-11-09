@@ -79,3 +79,11 @@ Existing IndexedDB schema, exercise keys, and backup version remain unchanged.
 - Day highlight now follows the selected date instead of stale initial state.
 - Weekly Progress cardio list loop now scopes each activity correctly, preventing the page from crashing.
 - Service worker cache bumped to v15 for deployment.
+
+
+## v17 navigation fix
+- Removed complex drag overlays and animation locks. Swipes navigate on release with a short transition.
+- Centralized day selection so the selected date controls the highlight.
+- Screen errors show a recoverable error view rather than leaving the navigation blank.
+- Service worker uses network-first requests with offline cached fallback.
+- No IndexedDB schema changes.
