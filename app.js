@@ -14,166 +14,218 @@ const dateStr=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-$
 const parseDate=s=>new Date(s+'T12:00:00');const addDays=(d,n)=>{let x=new Date(d);x.setDate(x.getDate()+n);return x};const dayIndex=d=>(d.getDay()+6)%7;const monday=d=>addDays(d,-dayIndex(d));const fmt=(d,opts={month:'short',day:'numeric',year:'numeric'})=>d.toLocaleDateString('en-US',opts);const num=v=>v===''||v==null?null:Number(v);const valid=v=>v!==null&&Number.isFinite(v)&&v>=0;
 const DB_NAME='gym-log-v1',STORE='records';let db;
 function openDB(){return new Promise((resolve,reject)=>{let r=indexedDB.open(DB_NAME,1);r.onupgradeneeded=()=>r.result.createObjectStore(STORE,{keyPath:'id'});r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
-function tx(mode,fn){return new Promise((resolve,reject)=>{const t=db.transaction(STORE,mode),s=t.objectStore(STORE);let req=fn(s);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);t.onerror=()=>reject(t.error)})}
+function tx(mode,fn){return new Promise((resolve,reject)=>{const t=db.transaction(STORE,mode),store=t.objectStore(STORE);let result;try{const req=fn(store);if(req)req.onsuccess=()=>{result=req.result}}catch(err){t.abort();reject(err);return}t.oncomplete=()=>resolve(result);t.onerror=()=>reject(t.error||new Error('Database write failed'));t.onabort=()=>reject(t.error||new Error('Database transaction aborted'))})}
 const get=id=>tx('readonly',s=>s.get(id)),put=o=>tx('readwrite',s=>s.put(o)),all=()=>tx('readonly',s=>s.getAll());
-const S={tab:'gym',day:dayIndex(new Date()),date:dateStr(new Date()),sub:'weekly',offset:0,range:'1M',metric:'Lifts',exercise:'',liftMetric:'Weight',cardioMetric:'Steps',bodyOffset:0,bodyRange:'1M',settings:{goal:70000,reminder:7,fontColor:'#f1f2f4',bgColor:'#101114',graphColor:'#c6d6ff'},records:[],draft:null,previous:null};
+// Keep failed edits in memory until explicitly retried. Never silently discard them.
+let writeTail=Promise.resolve();
+const unsaved=new Map();
+let writeFailed=false;
+let retryInProgress=false;
+function enqueueWrite(job){
+ const pending=writeTail.then(job);
+ writeTail=pending.catch(err=>{writeFailed=true;console.error('Gym Tracker storage error:',err);showSaveWarning();});
+ return pending;
+}
+function showSaveWarning(){
+ let bar=document.querySelector('#save-warning');
+ if(!bar){bar=document.createElement('div');bar.id='save-warning';bar.setAttribute('role','alert');document.body.append(bar)}
+ bar.innerHTML='Some changes are not saved. <button type="button" id="retry-save">Retry saving</button>';
+ bar.querySelector('button').onclick=retryFailedSaves;
+ bar.hidden=false;
+}
+async function retryFailedSaves(){
+ if(retryInProgress)return;
+ retryInProgress=true;
+ const button=document.querySelector('#retry-save');if(button)button.disabled=true;
+ try{
+   await writeTail;
+   // Snapshot the pending versions; later edits must not be erased by this retry.
+   const snapshots=[...unsaved.values()];
+   if(snapshots.length)await enqueueWrite(()=>tx('readwrite',store=>{for(const r of snapshots)store.put(r)}));
+   for(const r of snapshots)if(unsaved.get(r.id)===r)unsaved.delete(r.id);
+   writeFailed=unsaved.size>0;
+   if(!writeFailed){document.querySelector('#save-warning')?.remove();toast('Changes saved')}
+   else showSaveWarning();
+ }catch(err){writeFailed=true;showSaveWarning()}
+ finally{retryInProgress=false;const retry=document.querySelector('#retry-save');if(retry)retry.disabled=false}
+}
+async function flushWrites(){await writeTail;if(writeFailed||unsaved.size)throw Error('Some changes have not been saved. Tap Retry saving before exporting or importing.');}
+const S={tab:'gym',day:dayIndex(new Date()),date:dateStr(new Date()),sub:'weekly',offset:0,range:'1M',metric:'Lifts',exercise:'',liftMetric:'Weight',cardioMetric:'Steps',bodyOffset:0,bodyRange:'1M',settings:{goal:70000,reminder:7,fontColor:'#f1f2f4',bgColor:'#101114',graphColor:'#c6d6ff'},records:[]};
 const rec=(type,date)=>S.records.find(x=>x.id===type+':'+date);
 const datesBetween=(a,b)=>S.records.filter(x=>x.date>=a&&x.date<=b);
 function toast(m){let e=$('#toast');e.textContent=m;e.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>e.classList.remove('show'),2600)}
-function updateRecord(r){const i=S.records.findIndex(x=>x.id===r.id);if(i<0)S.records.push(r);else S.records[i]=r;return put(r)}
-function getSession(date){return rec('session',date)||{id:'session:'+date,type:'session',date,completed:false,exercises:{}}}
-function getActivity(date){return rec('activity',date)||{id:'activity:'+date,type:'activity',date,steps:null,run:null,swim:null,cycle:null}}
-function lastExercise(day,key,date){return S.records.filter(x=>x.type==='session'&&x.date<date&&x.day===day&&x.exercises?.[key]?.sets?.some(s=>valid(s.w)||valid(s.r))).sort((a,b)=>b.date.localeCompare(a.date))[0]?.exercises[key]?.sets||null}
+function updateRecord(r){
+ const snapshot=structuredClone(r),i=S.records.findIndex(x=>x.id===r.id);
+ if(i<0)S.records.push(snapshot);else S.records[i]=snapshot;
+ historyCache=null;
+ unsaved.set(snapshot.id,snapshot);
+ return enqueueWrite(async()=>{
+   await put(snapshot);
+   // Do not clear a newer pending snapshot when an older write finishes.
+   if(unsaved.get(snapshot.id)===snapshot)unsaved.delete(snapshot.id);
+   if(!unsaved.size&&!writeFailed)document.querySelector('#save-warning')?.remove();
+ });
+}
+function getSession(date){return structuredClone(rec('session',date)||{id:'session:'+date,type:'session',date,completed:false,exercises:{}})}
+function getActivity(date){return structuredClone(rec('activity',date)||{id:'activity:'+date,type:'activity',date,steps:null,ruck:null,run:null,swim:null,cycle:null})}
+let historyCache=null;
+function workoutHistory(date){
+ if(historyCache?.date===date)return historyCache;
+ const previous=new Map(),past=new Map();
+ const sessions=S.records.filter(r=>r.type==='session'&&r.date<date).sort((a,b)=>b.date.localeCompare(a.date));
+ for(const r of sessions){
+   for(const [key,entry] of Object.entries(r.exercises||{})){
+     const sets=entry?.sets||[];
+     if(!previous.has(key)&&sets.some(v=>valid(v.w)||valid(v.r)))previous.set(key,sets);
+     if(!past.has(key))past.set(key,[]);
+     for(const set of sets)if(valid(set.w)&&valid(set.r))past.get(key).push(set);
+   }
+ }
+ return historyCache={date,previous,past};
+}
+function lastExercise(day,key,date){return workoutHistory(date).previous.get(key)||null}
 function exKey(day,i){return day+':'+i}
 function exData(day,i,date){const e=ROUTINES[day].ex[i],saved=getSession(date).exercises[exKey(day,i)];return {sets:saved?.sets||Array.from({length:e[1]},()=>({w:null,r:null})),prev:lastExercise(day,exKey(day,i),date)||e[2].map(a=>({w:a?.[0]??null,r:a?.[1]??null})),unit:e[3]||'reps'}}
 function nav(){return `<nav class="nav"><div class="navin">${[['gym','♧','Gym Log'],['progress','▥','Progress'],['body','⚖','Body Weight'],['data','▤','Data']].map(([id,icon,label])=>`<button data-tab="${id}" class="${S.tab===id?'active':''}"><span class="symbol">${icon}</span>${label}</button>`).join('')}</div></nav>`}
 function shell(title,content){$('#app').innerHTML=`<main class="app"><header class="top"><h1>${title}</h1><div class="topright"><span class="sub">Offline · Private</span><button class="settings-gear ${S.tab==='settings'?'active':''}" data-tab="settings" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="M19.4 15a1.6 1.6 0 0 0 .32 1.77l.05.05-2 2-.05-.05a1.6 1.6 0 0 0-1.77-.32l-.09.04a1.6 1.6 0 0 0-.96 1.47V20h-2.8v-.04a1.6 1.6 0 0 0-.96-1.47l-.09-.04a1.6 1.6 0 0 0-1.77.32l-.05.05-2-2 .05-.05A1.6 1.6 0 0 0 7.6 15l-.04-.09a1.6 1.6 0 0 0-1.47-.96H6v-2.8h.09a1.6 1.6 0 0 0 1.47-.96l.04-.09a1.6 1.6 0 0 0-.32-1.77l-.05-.05 2-2 .05.05a1.6 1.6 0 0 0 1.77.32l.09-.04a1.6 1.6 0 0 0 .96-1.47V5h2.8v.04a1.6 1.6 0 0 0 .96 1.47l.09.04a1.6 1.6 0 0 0 1.77-.32l.05-.05 2 2-.05.05a1.6 1.6 0 0 0-.32 1.77l.04.09a1.6 1.6 0 0 0 1.47.96H21v2.8h-.09a1.6 1.6 0 0 0-1.47.96Z" transform="translate(-1 -1) scale(1.08)"/></svg></button></div></header>${content}</main>${nav()}`;bindGlobal()}
 function bindGlobal(){document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{S.tab=b.dataset.tab;S.offset=0;render()})}
 function daybar(){return `<div class="days">${DAYS.map((d,i)=>`<button class="${S.day===i?'active':''}" data-day="${i}" aria-label="${DAYFULL[i]}">${d}</button>`).join('')}</div>`}
-function personalRecord(day,i,date,sets){const key=exKey(day,i),unit=ROUTINES[day].ex[i][3]||'reps';if(unit==='sec')return '';const past=S.records.filter(r=>r.type==='session'&&r.date<date).flatMap(r=>r.exercises?.[key]?.sets||[]).filter(s=>valid(s.w)&&valid(s.r));const now=sets.filter(s=>valid(s.w)&&valid(s.r));if(!past.length||!now.length)return '';const maxW=Math.max(...past.map(s=>s.w)),maxE=Math.max(...past.map(s=>s.w*(1+s.r/30)));if(now.some(s=>s.w>maxW))return '🏆 New weight PR';if(now.some(s=>s.w*(1+s.r/30)>maxE))return '🏆 New estimated 1RM PR';if(now.some(s=>s.r>Math.max(0,...past.filter(p=>p.w===s.w).map(p=>p.r))&&past.some(p=>p.w===s.w)))return '🏆 New rep PR';return ''}
+function personalRecord(day,i,date,sets){const key=exKey(day,i),unit=ROUTINES[day].ex[i][3]||'reps';if(unit==='sec')return '';const past=workoutHistory(date).past.get(key)||[];const now=sets.filter(s=>valid(s.w)&&valid(s.r));if(!past.length||!now.length)return '';const maxW=Math.max(...past.map(s=>s.w)),maxE=Math.max(...past.map(s=>s.w*(1+s.r/30)));if(now.some(s=>s.w>maxW))return '🏆 New weight PR';if(now.some(s=>s.w*(1+s.r/30)>maxE))return '🏆 New estimated 1RM PR';if(now.some(s=>s.r>Math.max(0,...past.filter(p=>p.w===s.w).map(p=>p.r))&&past.some(p=>p.w===s.w)))return '🏆 New rep PR';return ''}
 function setRows(day,i){const e=ROUTINES[day].ex[i],d=exData(day,i,S.date),pr=personalRecord(day,i,S.date,d.sets),status=getSession(S.date).exercises[exKey(day,i)]?.status||'progress';return `<section class="line"><div class="section-title"><div class="stack"><strong>${esc(e[0])}</strong><span class="sub">${d.sets.length} sets</span></div><div class="exercise-actions"><button class="iconbtn" data-copy-ex="${i}" aria-label="Copy previous exercise" title="Copy previous exercise"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="iconbtn" data-add="${i}" aria-label="Add set">+</button><button class="iconbtn" data-remove="${i}" aria-label="Remove set" ${d.sets.length<=1?'disabled':''}>−</button><button class="statusbtn ${status}" data-status="${i}" title="Tap to cycle: in progress, done, skipped" aria-label="${status}" aria-pressed="${status==='done'}">${status==='done'?'✓':status==='skipped'?'✕':'●'}</button></div></div><div class="setgrid"><span class="heading">Set</span><span class="heading">Previous</span><span class="heading">Weight</span><span class="heading">${d.unit==='sec'?'Seconds':'Reps'}</span>${d.sets.map((set,j)=>`<span class="small muted">${j+1}</span><span class="previous">${d.prev[j]?(valid(d.prev[j].w)?d.prev[j].w:'—')+' × '+(valid(d.prev[j].r)?d.prev[j].r:'—'):'—'}</span><input class="field" type="number" inputmode="decimal" min="0" step="any" data-set="${i}" data-index="${j}" data-field="w" value="${set.w??''}" placeholder="${d.prev[j]?.w??'lb'}" aria-label="${esc(e[0])} set ${j+1} weight"><input class="field" type="number" inputmode="numeric" min="0" step="1" data-set="${i}" data-index="${j}" data-field="r" value="${set.r??''}" placeholder="${d.prev[j]?.r??d.unit}" aria-label="${esc(e[0])} set ${j+1} ${d.unit}">`).join('')}</div>${pr?`<div class="small good" style="margin-top:8px">${pr}</div>`:''}</section>`}
 function cardioInputs(){return `<div class="section"><div class="section-title"><h2>Cardio <span class="sub">Optional</span></h2></div>${[['run','Running'],['swim','Swimming'],['cycle','Cycling']].map(([k,name])=>{const v=getActivity(S.date)[k]||{};return `<div class="line"><strong>${name}</strong><div class="row" style="margin-top:9px"><label class="stack small muted" style="flex:1">Distance (${k==='swim'?'m':'km'})<input class="field" type="number" inputmode="decimal" min="0" step="any" data-cardio="${k}" data-cfield="distance" value="${v.distance??''}" placeholder="—"></label><label class="stack small muted" style="flex:1">Minutes<input class="field" type="number" inputmode="decimal" min="0" step="any" data-cardio="${k}" data-cfield="minutes" value="${v.minutes??''}" placeholder="—"></label></div></div>`}).join('')}</div>`}
-function gym(){const d=parseDate(S.date),day=dayIndex(d),r=ROUTINES[day],a=getActivity(S.date),session=getSession(S.date);S.day=day;let html=`${daybar()}<div class="section-title section"><div class="stack"><h2>${r.name}</h2><span class="sub">${fmt(d)} · ${DAYFULL[day]}</span></div><input type="date" id="workdate" class="field input-narrow" value="${S.date}" aria-label="Workout date"></div><div class="line row"><strong>👟 Steps</strong><input id="steps" class="field input-narrow" type="number" min="0" step="1" inputmode="numeric" placeholder="Enter steps" value="${a.steps??''}"></div>`;
+function gym(){const d=parseDate(S.date),day=dayIndex(d),r=ROUTINES[day],a=getActivity(S.date);let html=`${daybar()}<div class="section-title section"><div class="stack"><h2>${r.name}</h2><span class="sub">${fmt(d)} · ${DAYFULL[day]}</span></div><input type="date" id="workdate" class="field input-narrow" value="${S.date}" aria-label="Workout date"></div><div class="line row"><strong>👟 Steps</strong><input id="steps" class="field input-narrow" type="number" min="0" step="1" inputmode="numeric" placeholder="Enter steps" value="${a.steps??''}"></div><div class="line"><strong>🎒 Rucking <span class="sub">Optional</span></strong><div class="row" style="margin-top:9px"><label class="stack small muted" style="flex:1">Rucking steps<input class="field" type="number" min="0" step="1" inputmode="numeric" data-ruck="steps" value="${a.ruck?.steps??''}" placeholder="—"></label><label class="stack small muted" style="flex:1">Pack weight (lb)<input class="field" type="number" min="0" step="any" inputmode="decimal" data-ruck="weight" value="${a.ruck?.weight??''}" placeholder="—"></label></div><p class="small muted" style="margin:8px 0 0">Rucking steps are recorded separately and are not added to daily steps.</p></div>`;
 if(r.ex.length){html+=r.ex.map((e,i)=>setRows(day,i)).join('')}else html+=`<div class="note section">Rest day. Record steps or any cardio you actually complete; empty fields are not treated as zero.</div>`;
 html+=cardioInputs()+`<p class="note section">Entries save automatically on this device. The first previous values are reference numbers transcribed from your screenshots, not dated historical sessions.</p>`;shell('Gym Log',html);
-document.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>{let current=parseDate(S.date),delta=Number(b.dataset.day)-dayIndex(current);S.date=dateStr(addDays(current,delta));render()});$('#workdate').onchange=e=>{if(!e.target.value)return;S.date=e.target.value;render()};$('#steps').oninput=e=>saveActivityField('steps',e.target.value);
+document.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>{let current=parseDate(S.date),delta=Number(b.dataset.day)-dayIndex(current);S.date=dateStr(addDays(current,delta));render()});$('#workdate').onchange=e=>{if(!e.target.value)return;S.date=e.target.value;render()};$('#steps').oninput=e=>saveActivityField('steps',e.target.value);document.querySelectorAll('[data-ruck]').forEach(e=>e.oninput=()=>saveRuck(e.dataset.ruck,e.value));
 document.querySelectorAll('[data-set]').forEach(e=>e.oninput=()=>saveSet(+e.dataset.set,+e.dataset.index,e.dataset.field,e.value));document.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>changeSets(+b.dataset.add,1));document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>changeSets(+b.dataset.remove,-1));document.querySelectorAll('[data-cardio]').forEach(e=>e.oninput=()=>saveCardio(e.dataset.cardio,e.dataset.cfield,e.value));
-document.querySelectorAll('[data-copy-ex]').forEach(b=>b.onclick=()=>copyExercise(+b.dataset.copyEx));document.querySelectorAll('[data-status]').forEach(b=>b.onclick=()=>cycleStatus(+b.dataset.status));bindSwipe($('.days'),dir=>{slideTo(dir,()=>{S.date=dateStr(addDays(parseDate(S.date),dir));render()},'.app')});bindSwipe($('.app'),dir=>{slideTo(dir,()=>{S.date=dateStr(addDays(parseDate(S.date),dir));render()},'.app')},{exclude:'.days, input, button, select, textarea, .nav'});}
+document.querySelectorAll('[data-copy-ex]').forEach(b=>b.onclick=()=>copyExercise(+b.dataset.copyEx));document.querySelectorAll('[data-status]').forEach(b=>b.onclick=()=>cycleStatus(+b.dataset.status));bindGymSwipe();}
+function bindGymSwipe(){
+ // A short sliding transition between days, without touching the fixed nav.
+ const area=document.querySelector('.app');let start=null;
+ area.addEventListener('touchstart',e=>{
+   if(e.touches.length!==1||e.target.closest('input,button,select,textarea,.nav'))return;
+   start={x:e.touches[0].clientX,y:e.touches[0].clientY};
+ },{passive:true});
+ area.addEventListener('touchend',e=>{
+   if(!start||!e.changedTouches.length)return;
+   const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;start=null;
+   if(Math.abs(dx)<55||Math.abs(dx)<Math.abs(dy)*1.3)return;
+   const dir=dx<0?1:-1;
+   S.date=dateStr(addDays(parseDate(S.date),dir));render();
+   const next=document.querySelector('.app');
+   if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+   // Only animate the newly rendered content; no expensive duplicate live DOM.
+   next.animate([{transform:`translateX(${dir*24}px)`,opacity:.6},{transform:'translateX(0)',opacity:1}],{duration:190,easing:'ease-out'});
+ },{passive:true});
+ area.addEventListener('touchcancel',()=>{start=null},{passive:true});
+}
 async function copyExercise(i){const day=dayIndex(parseDate(S.date)),key=exKey(day,i),r=getSession(S.date),previous=lastExercise(day,key,S.date)||ROUTINES[day].ex[i][2].map(a=>({w:a?.[0]??null,r:a?.[1]??null}));if(!previous.length){toast('No previous values for this exercise');return}const existing=r.exercises[key]?.sets||[];if(existing.some(s=>valid(s.w)||valid(s.r))&&!confirm('Replace current entries for this exercise?'))return;r.day=day;r.exercises[key]={...(r.exercises[key]||{}),sets:previous.map(s=>({...s}))};await updateRecord(r);render();toast('Exercise values copied')}
 async function cycleStatus(i){const day=dayIndex(parseDate(S.date)),r=getSession(S.date),key=exKey(day,i),entry=r.exercises[key]||{sets:exData(day,i,S.date).sets.map(s=>({...s}))};entry.status=entry.status==='done'?'skipped':entry.status==='skipped'?'progress':'done';r.day=day;r.exercises[key]=entry;r.completed=ROUTINES[day].ex.every((_,j)=>['done','skipped'].includes(r.exercises[exKey(day,j)]?.status))&&ROUTINES[day].ex.some((_,j)=>r.exercises[exKey(day,j)]?.status==='done');await updateRecord(r);render()}
 async function saveSet(i,j,field,value){let day=dayIndex(parseDate(S.date)),r=getSession(S.date),key=exKey(day,i);r.day=day;if(!r.exercises[key])r.exercises[key]={sets:exData(day,i,S.date).sets.map(x=>({...x})),status:'progress'};r.exercises[key].sets[j][field]=value===''?null:Number(value);await updateRecord(r)}
 async function changeSets(i,delta){let day=dayIndex(parseDate(S.date)),r=getSession(S.date),key=exKey(day,i),sets=(r.exercises[key]?.sets||exData(day,i,S.date).sets).map(x=>({...x}));if(delta<0){if(sets.length<=1)return;let last=sets.at(-1);if((valid(last.w)||valid(last.r))&&!confirm('Remove the last set and its entered data?'))return;sets.pop()}else sets.push({w:null,r:null});r.day=day;r.exercises[key]={...(r.exercises[key]||{}),sets};await updateRecord(r);render()}
-async function saveActivityField(k,value){let a=getActivity(S.date);a[k]=value===''?null:Number(value);await updateRecord(a)}
-async function saveCardio(k,f,value){let a=getActivity(S.date);let o={...(a[k]||{})};o[f]=value===''?null:Number(value);a[k]=valid(o.distance)||valid(o.minutes)?o:null;await updateRecord(a)}
-async function copyPrevious(){let day=dayIndex(parseDate(S.date)),r=getSession(S.date);if(Object.values(r.exercises).some(x=>x.sets.some(s=>valid(s.w)||valid(s.r)))&&!confirm('Replace currently entered sets with previous values?'))return;let found=false;for(let i=0;i<ROUTINES[day].ex.length;i++){let prev=lastExercise(day,exKey(day,i),S.date);if(prev){r.exercises[exKey(day,i)]={sets:prev.map(s=>({...s}))};found=true}}if(!found){toast('No earlier saved workout yet');return}r.day=day;await updateRecord(r);render();toast('Previous workout copied')}
+async function saveActivityField(k,value){let a=getActivity(S.date);a[k]=value===''?null:Number(value);if(a[k]!==null&&(!Number.isSafeInteger(a[k])||a[k]<0)){toast('Steps must be a non-negative whole number');return}await updateRecord(a)}
+async function saveRuck(field,value){
+ const a=getActivity(S.date),ruck={...(a.ruck||{})};
+ const n=value===''?null:Number(value);
+ if(n!==null&&(n<0||!Number.isFinite(n)||(field==='steps'&&!Number.isSafeInteger(n)))){toast(field==='steps'?'Rucking steps must be a non-negative whole number':'Pack weight must be a non-negative number');return}
+ ruck[field]=n;
+ a.ruck=ruck.steps!=null||ruck.weight!=null?ruck:null;
+ await updateRecord(a);
+}
+async function saveCardio(k,f,value){let a=getActivity(S.date);let o={...(a[k]||{})};o[f]=value===''?null:Number(value);if(o[f]!==null&&(!Number.isFinite(o[f])||o[f]<0)){toast('Enter a non-negative number');return}a[k]=valid(o.distance)||valid(o.minutes)?o:null;await updateRecord(a)}
 function periodBounds(offset,range,anchor=new Date()){let now=new Date(anchor);if(range==='1W'){let s=addDays(monday(now),offset*7);return [s,addDays(s,6)]}if(range==='1M'){let s=new Date(now.getFullYear(),now.getMonth()+offset,1);return [s,new Date(s.getFullYear(),s.getMonth()+1,0)]}if(range==='3M'||range==='6M'){let n=range==='3M'?3:6;let base=Math.floor(now.getMonth()/n)*n;let s=new Date(now.getFullYear(),base+offset*n,1);return [s,new Date(s.getFullYear(),s.getMonth()+n,0)]}if(range==='1Y'){let s=new Date(now.getFullYear()+offset,0,1);return [s,new Date(s.getFullYear(),11,31)]}return [new Date(2000,0,1),now]}
 function periodLabel(a,b,range){if(range==='All')return 'All recorded history';if(range==='1M')return fmt(a,{month:'long',year:'numeric'});if(range==='1Y')return String(a.getFullYear());return `${fmt(a,{month:'short',day:'numeric',year:'numeric'})} – ${fmt(b,{month:'short',day:'numeric',year:'numeric'})}`}
 function periodNav(range,offset,type){let [a,b]=periodBounds(offset,range),future=a>new Date();return `<div class="period"><button data-shift="-1" aria-label="Previous period">‹</button><strong>${periodLabel(a,b,range)}</strong><button data-shift="1" ${range==='All'||offset>=0?'disabled':''} aria-label="Next period">›</button></div>`}
-function bindSwipe(target,onMove,{exclude='input, button, select, textarea, a, label'}={}){
- if(!target)return;
- let start=null;
- target.addEventListener('touchstart',e=>{
-   if(e.touches.length!==1||e.target.closest(exclude)){start=null;return}
-   start={x:e.touches[0].clientX,y:e.touches[0].clientY};
- },{passive:true});
- target.addEventListener('touchend',e=>{
-   if(!start||!e.changedTouches.length)return;
-   const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;
-   start=null;
-   if(Math.abs(dx)>=45&&Math.abs(dx)>Math.abs(dy)*1.25)onMove(dx>0?-1:1);
- },{passive:true});
- target.addEventListener('touchcancel',()=>{start=null},{passive:true});
-}
+// Live swipe uses a frozen DOM snapshot and pure adjacent-period markup.
+// Never replace the touched DOM element until the gesture has ended (iOS Safari).
 let slideBusy=false;
-function slideTo(direction,update,selector='.swipezone'){
- if(slideBusy)return;
- const old=document.querySelector(selector);
- if(!old){update();return}
- // Clone only the swipable content, never the fixed bottom navigation.
- const snapshot=old.cloneNode(true);
- const oldHeight=old.getBoundingClientRect().height;
- update();
- const next=document.querySelector(selector);
- if(!next||window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- const parent=next.parentElement;
- const originalPosition=parent.style.position;
- if(getComputedStyle(parent).position==='static')parent.style.position='relative';
- snapshot.classList.add('slide-snapshot');
- snapshot.style.cssText+=`;position:absolute;top:${next.offsetTop}px;left:${next.offsetLeft}px;width:${next.offsetWidth}px;height:${oldHeight}px;pointer-events:none;z-index:3;overflow:hidden;`;
- parent.appendChild(snapshot);
- slideBusy=true;
- const distance=direction>0?1:-1, duration=280, easing='cubic-bezier(.22,1,.36,1)';
- const animations=[snapshot.animate([{transform:'translateX(0)',opacity:1},{transform:`translateX(${-distance*100}%)`,opacity:0}],{duration,easing}),next.animate([{transform:`translateX(${distance*100}%)`,opacity:.7},{transform:'translateX(0)',opacity:1}],{duration,easing})];
- const cleanup=()=>{snapshot.remove();parent.style.position=originalPosition;slideBusy=false};
- Promise.all(animations.map(x=>x.finished.catch(()=>{}))).then(cleanup);
-}
-function captureNeighbor(which,dir,renderFn){
- // Render the neighboring view in a hidden *separate* root. Never replace the
- // touched DOM node mid-gesture: iOS cancels touch sequences when that happens.
- const original=document.getElementById('app');
- const temp=document.createElement('div');
- temp.id='app';temp.style.cssText='position:fixed;left:-200vw;top:0;width:100vw;visibility:hidden;pointer-events:none';
- original.id='app-live';document.body.appendChild(temp);
- let result=null;
+function periodPreview(which,dir){
+ const old=S[which];let markup;
  try{
-   S[which]+=dir;
-   renderFn();
-   result=temp.querySelector('.swipezone')?.cloneNode(true)||null;
- }finally{
-   S[which]-=dir;
-   temp.remove();original.id='app';
- }
- return result;
+   S[which]=old+dir;
+   if(which==='bodyOffset'){
+     const [a,b]=periodBounds(S.bodyOffset,S.bodyRange);
+     const points=S.records.filter(r=>r.type==='body'&&r.date>=dateStr(a)&&r.date<=dateStr(b))
+       .sort((x,y)=>x.date.localeCompare(y.date)).map(r=>({label:r.date,value:r.weight}));
+     markup=`<div class="swipezone">${periodNav(S.bodyRange,S.bodyOffset)}${chart(points,'kg')}</div>`;
+   }else markup=S.sub==='weekly'?weekly():overall();
+ }finally{S[which]=old}
+ const holder=document.createElement('div');holder.innerHTML=markup;
+ return holder.querySelector('.swipezone');
+}
+function liveSwipe(area,allowed,preview,commit,{exclude='input,button,select,textarea,a,label'}={}){
+ if(!area)return;
+ let g=null;
+ const clear=()=>{if(g?.overlay)g.overlay.remove();g=null};
+ area.addEventListener('touchstart',e=>{
+   if(slideBusy||e.touches.length!==1||e.target.closest(exclude))return;
+   const t=e.touches[0];g={x:t.clientX,y:t.clientY,dx:0,mode:null,neighbors:{}};
+ },{passive:true});
+ area.addEventListener('touchmove',e=>{
+   if(!g||e.touches.length!==1)return;
+   const t=e.touches[0],dx=t.clientX-g.x,dy=t.clientY-g.y;
+   if(!g.mode){
+     if(Math.max(Math.abs(dx),Math.abs(dy))<9)return;
+     if(Math.abs(dy)>Math.abs(dx)){clear();return}
+     g.mode='horizontal';
+   }
+   if(e.cancelable)e.preventDefault();
+   const dir=dx<0?1:-1;
+   if(!allowed(dir)){g.overlay?.remove();g.overlay=null;g.dir=null;return}
+   if(!g.overlay||g.dir!==dir){
+     g.overlay?.remove();
+     const next=g.neighbors[dir]||(g.neighbors[dir]=preview(dir));if(!next)return;
+     const overlay=document.createElement('div');overlay.className='drag-overlay';
+     const current=document.createElement('div');current.className='drag-panel';
+     const incoming=document.createElement('div');incoming.className='drag-panel';
+     const before=area.cloneNode(true);
+     current.replaceChildren(...before.childNodes);
+     incoming.replaceChildren(...next.childNodes);
+     overlay.append(current,incoming);area.appendChild(overlay);
+     Object.assign(g,{dir,overlay,current,incoming});
+   }
+   const w=area.clientWidth,x=Math.max(-w,Math.min(w,dx));g.dx=x;
+   g.current.style.transform=`translate3d(${x}px,0,0)`;
+   g.incoming.style.transform=`translate3d(${x+(dir>0?w:-w)}px,0,0)`;
+ },{passive:false});
+ area.addEventListener('touchend',()=>{
+   if(!g)return;
+   const done=g;g=null;
+   if(!done.overlay)return;
+   const w=area.clientWidth,shouldCommit=Math.abs(done.dx)>Math.min(65,w*.2);
+   const end=shouldCommit?(done.dir>0?-w:w):0;
+   const duration=shouldCommit?200:160;
+   for(const panel of [done.current,done.incoming])panel.style.transition=`transform ${duration}ms cubic-bezier(.22,1,.36,1)`;
+   done.current.style.transform=`translate3d(${end}px,0,0)`;
+   done.incoming.style.transform=`translate3d(${end+(done.dir>0?w:-w)}px,0,0)`;
+   slideBusy=true;
+   setTimeout(()=>{done.overlay.remove();slideBusy=false;if(shouldCommit&&area.isConnected)commit(done.dir)},duration+25);
+ },{passive:true});
+ area.addEventListener('touchcancel',clear,{passive:true});
 }
 function bindPeriod(renderFn,which='offset'){
  const range=which==='bodyOffset'?S.bodyRange:S.sub==='weekly'?'1W':S.range;
  const allowed=dir=>range!=='All'&&!(dir>0&&S[which]>=0);
- const shift=dir=>{if(slideBusy||!allowed(dir))return;slideTo(dir,()=>{S[which]+=dir;renderFn()})};
- document.querySelectorAll('[data-shift]').forEach(b=>b.onclick=()=>shift(Number(b.dataset.shift)));
- const area=document.querySelector('.swipezone');if(!area)return;
- let gesture=null;
- const excluded='input,button,select,textarea,a,label';
- function cleanup(){if(!gesture)return;gesture.overlay?.remove();gesture=null;}
- area.addEventListener('touchstart',e=>{
-   if(slideBusy||e.touches.length!==1||e.target.closest(excluded))return;
-   const t=e.touches[0];gesture={x:t.clientX,y:t.clientY,dx:0,mode:null,overlay:null,zone:area};
- },{passive:true});
- area.addEventListener('touchmove',e=>{
-   if(!gesture||e.touches.length!==1)return;
-   const t=e.touches[0],dx=t.clientX-gesture.x,dy=t.clientY-gesture.y;
-   if(!gesture.mode){
-     if(Math.max(Math.abs(dx),Math.abs(dy))<8)return;
-     if(Math.abs(dy)>Math.abs(dx)*1.1){cleanup();return}
-     gesture.mode='horizontal';
-   }
-   if(e.cancelable)e.preventDefault();
-   const dir=dx<0?1:-1;
-   if(!allowed(dir)){gesture.overlay?.remove();gesture.overlay=null;gesture.dir=null;return}
-   if(!gesture.overlay||gesture.dir!==dir){
-     gesture.overlay?.remove();gesture.dir=dir;
-     const before=area.cloneNode(true);
-     const after=captureNeighbor(which,dir,renderFn);
-     if(!after)return;
-     const holder=document.createElement('div');holder.className='drag-overlay';
-     const current=document.createElement('div');current.className='drag-panel';current.append(...before.childNodes);
-     const next=document.createElement('div');next.className='drag-panel';next.append(...after.childNodes);
-     holder.append(current,next);area.appendChild(holder);
-     gesture.overlay=holder;gesture.current=current;gesture.next=next;
-   }
-   const width=area.getBoundingClientRect().width;
-   const x=Math.max(-width,Math.min(width,dx));gesture.dx=x;
-   gesture.current.style.transform=`translate3d(${x}px,0,0)`;
-   gesture.next.style.transform=`translate3d(${x+(dir>0?width:-width)}px,0,0)`;
- },{passive:false});
- area.addEventListener('touchend',()=>{
-   if(!gesture)return;
-   const g=gesture;gesture=null;
-   if(g.mode!=='horizontal'||!g.overlay){g.overlay?.remove();return}
-   const width=area.getBoundingClientRect().width;
-   const commit=Math.abs(g.dx)>Math.min(70,width*.2);
-   const finalX=commit?(g.dir>0?-width:width):0;
-   const duration=commit?210:170;
-   g.current.style.transition=`transform ${duration}ms cubic-bezier(.22,1,.36,1)`;
-   g.next.style.transition=g.current.style.transition;
-   g.current.style.transform=`translate3d(${finalX}px,0,0)`;
-   g.next.style.transform=`translate3d(${finalX+(g.dir>0?width:-width)}px,0,0)`;
-   slideBusy=true;
-   setTimeout(()=>{g.overlay.remove();slideBusy=false;if(commit){S[which]+=g.dir;renderFn()}},duration+20);
- },{passive:true});
- area.addEventListener('touchcancel',cleanup,{passive:true});
+ const change=dir=>{if(slideBusy||!allowed(dir))return;S[which]+=dir;renderFn()};
+ document.querySelectorAll('[data-shift]').forEach(b=>b.onclick=()=>change(Number(b.dataset.shift)));
+ liveSwipe(document.querySelector('.swipezone'),allowed,dir=>periodPreview(which,dir),change);
 }
-
-function chart(points,unit=''){if(!points.length)return `<div class="note">No recorded data in this period yet.</div>`;let width=340,height=155,pad=26,values=points.map(p=>p.value),lo=Math.min(...values),hi=Math.max(...values);if(lo===hi){lo-=Math.max(1,lo*.05);hi+=Math.max(1,hi*.05)}let coords=points.map((p,i)=>[pad+(points.length===1?.5:i/(points.length-1))*(width-2*pad),height-pad-(p.value-lo)/(hi-lo)*(height-2*pad)]);let poly=coords.map(p=>p.join(',')).join(' ');return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Trend chart with ${points.length} data points"><line x1="${pad}" x2="${width-pad}" y1="${height-pad}" y2="${height-pad}" stroke="#50535b"/><polyline points="${poly}" fill="none" stroke="var(--graph)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${coords.map(([x,y],i)=>`<circle cx="${x}" cy="${y}" r="3.5" fill="var(--graph)"><title>${esc(points[i].label)}: ${points[i].value} ${esc(unit)}</title></circle>`).join('')}<text x="${pad}" y="15" fill="#9ca1ad" font-size="11">${hi.toFixed(hi<10?1:0)} ${esc(unit)}</text><text x="${pad}" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points[0].label)}</text><text x="${width-pad}" text-anchor="end" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points.at(-1).label)}</text></svg>`}
+function chart(points,unit=''){if(!points.length)return `<div class="note">No recorded data in this period yet.</div>`;let width=340,height=155,pad=26,values=points.map(p=>p.value),lo=Math.min(...values),hi=Math.max(...values);if(lo===hi){lo-=Math.max(1,lo*.05);hi+=Math.max(1,hi*.05)}let coords=points.map((p,i)=>[pad+(points.length===1?.5:i/(points.length-1))*(width-2*pad),height-pad-(p.value-lo)/(hi-lo)*(height-2*pad)]);let poly=coords.map(p=>p.join(',')).join(' ');return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Trend chart with ${points.length} data points"><line x1="${pad}" x2="${width-pad}" y1="${height-pad}" y2="${height-pad}" stroke="#50535b"/><polyline points="${poly}" fill="none" stroke="var(--graph)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${coords.map(([x,y],i)=>({x,y,i})).filter(p=>coords.length<=180||p.i===0||p.i===coords.length-1||p.i%Math.ceil(coords.length/180)===0).map(({x,y,i})=>`<circle cx="${x}" cy="${y}" r="3.5" fill="var(--graph)"><title>${esc(points[i].label)}: ${points[i].value} ${esc(unit)}</title></circle>`).join('')}<text x="${pad}" y="15" fill="#9ca1ad" font-size="11">${hi.toFixed(hi<10?1:0)} ${esc(unit)}</text><text x="${pad}" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points[0].label)}</text><text x="${width-pad}" text-anchor="end" y="${height-5}" fill="#9ca1ad" font-size="11">${esc(points.at(-1).label)}</text></svg>`}
 function stepsSummary(a,b){let rows=datesBetween(dateStr(a),dateStr(b)),acts=rows.filter(x=>x.type==='activity'&&valid(x.steps)),total=acts.reduce((n,x)=>n+x.steps,0),goal=S.settings.goal,done=0,missed=0,pending=0;for(let d=new Date(a);d<=b;d=addDays(d,1)){let ix=dayIndex(d);if(ix===3||ix===6)continue;let date=dateStr(d),session=rec('session',date);if(session?.completed)done++;else if(d<new Date(new Date().toDateString()))missed++;else pending++}let pct=Math.round(total/goal*100);return `<div class="metrics"><div class="metric"><b>${total.toLocaleString()}</b><span>Steps logged</span></div><div class="metric"><b>${done}/5</b><span>Workouts done</span></div><div class="metric"><b>${missed}</b><span>Missed days</span></div></div><div class="row"><strong>Weekly step goal</strong><span>${pct}%</span></div><div class="bar"><div style="width:${Math.min(100,pct)}%"></div></div><div class="row small muted"><span>${total.toLocaleString()} / ${goal.toLocaleString()} steps</span><span>${Math.max(0,goal-total).toLocaleString()} remaining</span></div><div class="row section"><label class="small muted" for="goal">Edit weekly goal</label><input id="goal" class="field input-narrow" type="number" min="1" step="1" value="${goal}"></div><h3 class="section">Daily steps</h3><div class="entrylist">${Array.from({length:7},(_,i)=>{let date=dateStr(addDays(a,i)),v=rec('activity',date)?.steps;return `<div class="row"><span>${DAYS[i]} <span class="sub">${date}</span></span><span>${valid(v)?v.toLocaleString():'Not logged'}</span></div>`}).join('')}</div><p class="note section">${pending} scheduled workouts pending. Missing step entries are excluded, not counted as zero. Rest days are not missed workouts.</p>`}
-function weekly(){let [a,b]=periodBounds(S.offset,'1W');return `<div class="swipezone">${periodNav('1W',S.offset)}${stepsSummary(a,b)}<h3 class="section">Cardio completed</h3>${cardioList(a,b)}</div>`}
-function cardioList(a,b){let entries=[];for(const r of datesBetween(dateStr(a),dateStr(b)).filter(x=>x.type==='activity'))for(let k of ['run','swim','cycle'])if(r[k])entries.push(`${r.date} · ${k==='run'?'Run':k==='swim'?'Swim':'Cycle'} · ${r[k].distance??'—'} ${k==='swim'?'m':'km'} · ${r[k].minutes??'—'} min`);return entries.length?`<div class="entrylist">${entries.map(x=>`<div class="row small">${esc(x)}</div>`).join('')}</div>`:`<div class="note">No cardio logged for this period.</div>`}
+function weekly(){let [a,b]=periodBounds(S.offset,'1W'),rucks=datesBetween(dateStr(a),dateStr(b)).filter(r=>r.type==='activity'&&r.ruck),ruckSteps=rucks.reduce((n,r)=>n+(valid(r.ruck.steps)?r.ruck.steps:0),0),ruckCount=rucks.filter(r=>valid(r.ruck.steps)||valid(r.ruck.weight)).length;return `<div class="swipezone">${periodNav('1W',S.offset)}${stepsSummary(a,b)}<h3 class="section">Rucking</h3><div class="metrics"><div class="metric"><b>${ruckSteps.toLocaleString()}</b><span>Rucking steps</span></div><div class="metric"><b>${ruckCount}</b><span>Logged days</span></div></div><p class="small muted">Rucking steps are included only in this separate total, not added to daily steps.</p><h3 class="section">Cardio completed</h3>${cardioList(a,b)}</div>`}
+function cardioList(a,b){let entries=[];for(const r of datesBetween(dateStr(a),dateStr(b)).filter(x=>x.type==='activity'))if(r.ruck)entries.push(`${r.date} · Rucking · ${r.ruck.steps??'—'} steps · ${r.ruck.weight??'—'} lb pack`);for(let k of ['run','swim','cycle'])if(r[k])entries.push(`${r.date} · ${k==='run'?'Run':k==='swim'?'Swim':'Cycle'} · ${r[k].distance??'—'} ${k==='swim'?'m':'km'} · ${r[k].minutes??'—'} min`);return entries.length?`<div class="entrylist">${entries.map(x=>`<div class="row small">${esc(x)}</div>`).join('')}</div>`:`<div class="note">No cardio logged for this period.</div>`}
 function exerciseOptions(){let out=[];for(let day=0;day<7;day++)ROUTINES[day].ex.forEach((e,i)=>out.push({id:exKey(day,i),name:e[0],day}));return out}
 function overall(){let range=S.range,[a,b]=periodBounds(S.offset,range),rows=datesBetween(dateStr(a),dateStr(b)),html=`<div class="tabs">${['Lifts','Cardio'].map(x=>`<button class="${S.metric===x?'active':''}" data-metric="${x}">${x}</button>`).join('')}</div><div class="ranges">${['1W','1M','3M','6M','1Y','All'].map(x=>`<button class="${range===x?'active':''}" data-range="${x}">${x}</button>`).join('')}</div><div class="swipezone">${periodNav(range,S.offset)}`;
-if(S.metric==='Cardio'){html+=`<div class="selectrow">${['Steps','Running','Swimming','Cycling'].map(x=>`<button class="chip ${S.cardioMetric===x?'active':''}" data-cardio-metric="${x}">${x}</button>`).join('')}</div>`;let key={Steps:'steps',Running:'run',Swimming:'swim',Cycling:'cycle'}[S.cardioMetric],pts=rows.filter(x=>x.type==='activity').map(r=>({label:r.date,value:key==='steps'?r.steps:r[key]?.distance})).filter(p=>valid(p.value)).sort((a,b)=>a.label.localeCompare(b.label));html+=`<h3>${S.cardioMetric}</h3>${chart(pts,key==='steps'?'steps':key==='swim'?'m':'km')}<p class="sub">Only logged activity appears. Tap graph points for values.</p>`}
+if(S.metric==='Cardio'){html+=`<div class="selectrow">${['Steps','Rucking Steps','Pack Weight','Running','Swimming','Cycling'].map(x=>`<button class="chip ${S.cardioMetric===x?'active':''}" data-cardio-metric="${x}">${x}</button>`).join('')}</div>`;let key={Steps:'steps','Rucking Steps':'ruckSteps','Pack Weight':'ruckWeight',Running:'run',Swimming:'swim',Cycling:'cycle'}[S.cardioMetric],pts=rows.filter(x=>x.type==='activity').map(r=>({label:r.date,value:key==='steps'?r.steps:key==='ruckSteps'?r.ruck?.steps:key==='ruckWeight'?r.ruck?.weight:r[key]?.distance})).filter(p=>valid(p.value)).sort((a,b)=>a.label.localeCompare(b.label));let unit=key==='steps'||key==='ruckSteps'?'steps':key==='ruckWeight'?'lb':key==='swim'?'m':'km';html+=`<h3>${S.cardioMetric}</h3>${chart(pts,unit)}<p class="sub">Only logged activity appears. Tap graph points for values. Rucking steps are tracked separately from daily steps.</p>`}
 else{const opts=exerciseOptions();let selected=S.exercise||opts[0].id;if(!opts.some(x=>x.id===selected))selected=opts[0].id;S.exercise=selected;html+=`<div class="selectrow">${['Weight','Reps','Volume','Est. 1RM'].map(x=>`<button class="chip ${S.liftMetric===x?'active':''}" data-liftmetric="${x}">${x}</button>`).join('')}</div><div class="entrylist">${opts.map(o=>`<button class="chip ${selected===o.id?'active':''}" data-exercise="${o.id}" style="text-align:left">${esc(o.name)} <span class="sub">${DAYS[o.day]}</span></button>`).join('')}</div>`;let pts=rows.filter(x=>x.type==='session').map(r=>{let sets=r.exercises?.[selected]?.sets?.filter(s=>valid(s.w)&&valid(s.r))||[];if(!sets.length)return null;let val=S.liftMetric==='Weight'?Math.max(...sets.map(s=>s.w)):S.liftMetric==='Reps'?Math.max(...sets.map(s=>s.r)):S.liftMetric==='Volume'?sets.reduce((n,s)=>n+s.w*s.r,0):Math.max(...sets.map(s=>s.w*(1+s.r/30)));return {label:r.date,value:Math.round(val*10)/10}}).filter(Boolean).sort((a,b)=>a.label.localeCompare(b.label));html+=`<h3 class="section">${S.liftMetric} progress</h3>${chart(pts,S.liftMetric==='Reps'?'reps':S.liftMetric==='Volume'?'lb·reps':'lb')}<p class="sub">PRs are calculated from recorded sets; estimated 1RM uses the Epley formula. Timed exercises are not suitable for estimated 1RM.</p>`}return html+'</div>'}
 function progress(){shell('Progress',`<div class="tabs"><button data-sub="weekly" class="${S.sub==='weekly'?'active':''}">Weekly Summary</button><button data-sub="overall" class="${S.sub==='overall'?'active':''}">Overall</button></div>${S.sub==='weekly'?weekly():overall()}`);document.querySelectorAll('[data-sub]').forEach(b=>b.onclick=()=>{S.sub=b.dataset.sub;S.offset=0;render()});bindPeriod(render);if($('#goal'))$('#goal').onchange=async e=>{let v=Number(e.target.value);if(!Number.isInteger(v)||v<1){toast('Enter a positive step goal');render();return}S.settings.goal=v;await updateRecord({id:'settings',type:'settings',...S.settings});render()};document.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{S.range=b.dataset.range;S.offset=0;render()});document.querySelectorAll('[data-metric]').forEach(b=>b.onclick=()=>{S.metric=b.dataset.metric;render()});document.querySelectorAll('[data-cardio-metric]').forEach(b=>b.onclick=()=>{S.cardioMetric=b.dataset.cardioMetric;render()});document.querySelectorAll('[data-liftmetric]').forEach(b=>b.onclick=()=>{S.liftMetric=b.dataset.liftmetric;render()});document.querySelectorAll('[data-exercise]').forEach(b=>b.onclick=()=>{S.exercise=b.dataset.exercise;render()})}
 function body(){let [a,b]=periodBounds(S.bodyOffset,S.bodyRange),entries=S.records.filter(r=>r.type==='body').sort((x,y)=>y.date.localeCompare(x.date)),points=entries.filter(r=>r.date>=dateStr(a)&&r.date<=dateStr(b)).map(r=>({label:r.date,value:r.weight})).reverse(),today=dateStr(new Date());shell('Body Weight',`<div class="section row"><label for="bodydate">Date</label><input id="bodydate" type="date" class="field input-narrow" value="${today}"></div><div class="section row"><label for="bodyvalue">Body weight (kg)</label><input id="bodyvalue" class="field input-narrow" type="number" min="1" step="any" inputmode="decimal" placeholder="kg" value="${rec('body',today)?.weight??''}"></div><div class="actions section"><button class="action" id="savebody">Save weight</button></div><h2 class="section">Weight trend</h2><div class="ranges">${['1W','1M','3M','6M','1Y','All'].map(x=>`<button data-body-range="${x}" class="${S.bodyRange===x?'active':''}">${x}</button>`).join('')}</div><div class="swipezone">${periodNav(S.bodyRange,S.bodyOffset)}${chart(points,'kg')}</div><h3 class="section">Recent entries</h3><div class="entrylist">${entries.slice(0,15).map(x=>`<div class="row"><span>${x.date}</span><span>${x.weight} kg <button class="iconbtn" data-delete-body="${x.date}" style="font-size:16px" aria-label="Delete entry">×</button></span></div>`).join('')||'<div class="note">No weigh-ins saved yet.</div>'}</div>`);$('#bodydate').onchange=e=>{$('#bodyvalue').value=rec('body',e.target.value)?.weight??''};$('#savebody').onclick=async()=>{let date=$('#bodydate').value,w=Number($('#bodyvalue').value);if(!date||!Number.isFinite(w)||w<=0||!$('#bodyvalue').value){toast('Enter a valid weight and date');return}await updateRecord({id:'body:'+date,type:'body',date,weight:w});render();toast('Body weight saved')};document.querySelectorAll('[data-body-range]').forEach(b=>b.onclick=()=>{S.bodyRange=b.dataset.bodyRange;S.bodyOffset=0;render()});bindPeriod(render,'bodyOffset');document.querySelectorAll('[data-delete-body]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this weigh-in?'))return;await del('body:'+b.dataset.deleteBody);render()})}
-const del=id=>tx('readwrite',s=>s.delete(id)).then(()=>{S.records=S.records.filter(x=>x.id!==id)});
+async function del(id){
+ await flushWrites(); // Never delete while earlier edits are unsaved.
+ await enqueueWrite(()=>tx('readwrite',store=>store.delete(id)));
+ S.records=S.records.filter(x=>x.id!==id);
+ historyCache=null;
+}
 const COLOR_DEFAULTS={fontColor:'#f1f2f4',bgColor:'#101114',graphColor:'#c6d6ff'};
 function applyTheme(){
  const root=document.documentElement;
@@ -190,11 +242,49 @@ function settingsPage(){
  document.querySelectorAll('[data-color-pick]').forEach(el=>el.oninput=()=>saveColor(el.dataset.colorPick,el.value));
  $('#reset-colors').onclick=async()=>{Object.assign(S.settings,COLOR_DEFAULTS);applyTheme();await updateRecord({id:'settings',type:'settings',...S.settings});render();toast('Default colors restored')};
 }
-function dataPage(){let raw=JSON.stringify(S.records),bytes=new Blob([raw]).size,last=localStorage.getItem('gym-last-backup');shell('Data',`<h2>Local Storage</h2><div class="data-row row"><span class="muted">Database</span><span>IndexedDB</span></div><div class="data-row row"><span class="muted">Stored records</span><span>${S.records.length}</span></div><div class="data-row row"><span class="muted">Approx. data size</span><span>${(bytes/1024).toFixed(1)} KB</span></div><h2 class="section">Backup & Restore</h2><div class="data-row"><button class="action secondary" id="export" style="width:100%">↓ Export complete JSON backup</button><p>Portable backup of all workout sessions, activity, body weight, and settings.</p></div><div class="data-row"><button class="action secondary" id="import" style="width:100%">↑ Import backup</button><input id="backupfile" type="file" accept=".json,application/json"><p>Validate and preview a backup before replacing your existing data.</p></div><div class="data-row"><button class="action secondary" id="csv" style="width:100%">↓ Export CSV files</button><p>Spreadsheet-friendly records for workouts, steps, cardio and weigh-ins.</p></div><h2 class="section">Backup Settings</h2><div class="data-row row"><span>Backup reminder</span><span>Every 7 days</span></div><div class="data-row row"><span class="muted">Last exported backup</span><span>${last?fmt(new Date(last)):'Never'}</span></div><p class="note section">Your data is stored on this device, not on a server. To protect against phone loss or Safari clearing website storage, save exported backups to iCloud Drive, OneDrive, or another location outside this app. This web app cannot automatically back up to those locations in the background.</p>`);$('#export').onclick=exportBackup;$('#import').onclick=()=>$('#backupfile').click();$('#backupfile').onchange=importBackup;$('#csv').onclick=exportCSV}
+function dataPage(){let raw=JSON.stringify(S.records),bytes=new Blob([raw]).size,last=localStorage.getItem('gym-last-backup');shell('Data',`<h2>Local Storage</h2><div class="data-row row"><span class="muted">Database</span><span>IndexedDB</span></div><div class="data-row row"><span class="muted">Stored records</span><span>${S.records.length}</span></div><div class="data-row row"><span class="muted">Approx. data size</span><span>${(bytes/1024).toFixed(1)} KB</span></div><h2 class="section">Backup & Restore</h2><div class="data-row"><button class="action secondary" id="export" style="width:100%">↓ Export complete JSON backup</button><p>Portable backup of all workout sessions, activity, body weight, and settings.</p></div><div class="data-row"><button class="action secondary" id="import" style="width:100%">↑ Import backup</button><input id="backupfile" type="file" accept=".json,application/json"><p>Validate and preview a backup before replacing your existing data.</p></div><div class="data-row"><button class="action secondary" id="csv" style="width:100%">↓ Export CSV files</button><p>Spreadsheet-friendly records for workouts, steps, cardio and weigh-ins.</p></div><h2 class="section">Backup Settings</h2><div class="data-row row"><span>Backup reminder</span><span>Every ${S.settings.reminder||7} days</span></div><div class="data-row row"><span class="muted">Last exported backup</span><span>${last?fmt(new Date(last)):'Never'}</span></div><p class="note section">Your data is stored on this device, not on a server. To protect against phone loss or Safari clearing website storage, save exported backups to iCloud Drive, OneDrive, or another location outside this app. This web app cannot automatically back up to those locations in the background.</p>`);$('#export').onclick=exportBackup;$('#import').onclick=()=>$('#backupfile').click();$('#backupfile').onchange=importBackup;$('#csv').onclick=exportCSV}
 function download(content,name,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
-function exportBackup(){const payload={app:'gym-log',version:1,exportedAt:new Date().toISOString(),records:S.records};download(JSON.stringify(payload),'gym-log-backup-'+dateStr(new Date())+'.json','application/json');localStorage.setItem('gym-last-backup',new Date().toISOString());render();toast('Backup prepared. Save it outside the app.')}
-async function importBackup(e){const file=e.target.files[0];if(!file)return;try{let p=JSON.parse(await file.text());if(p.app!=='gym-log'||p.version!==1||!Array.isArray(p.records)||p.records.length>100000||!p.records.every(x=>x&&typeof x.id==='string'&&typeof x.type==='string'&&x.id.length<200))throw Error('Invalid or unsupported backup');const ids=new Set(p.records.map(x=>x.id));if(ids.size!==p.records.length)throw Error('Duplicate record IDs');if(!confirm(`Backup contains ${p.records.length} records. This will REPLACE all ${S.records.length} current records. Continue?`))return;await new Promise((resolve,reject)=>{let t=db.transaction(STORE,'readwrite'),s=t.objectStore(STORE);s.clear();for(const r of p.records)s.put(r);t.oncomplete=resolve;t.onerror=()=>reject(t.error)});S.records=await all();S.settings={goal:70000,reminder:7,fontColor:'#f1f2f4',bgColor:'#101114',graphColor:'#c6d6ff',...(S.records.find(x=>x.id==='settings')||{})};applyTheme();render();toast('Backup restored')}catch(err){alert('Import failed: '+err.message)}finally{e.target.value=''}}
-function exportCSV(){let rows=[['date','type','day','exercise','set','weight_lb','reps_or_seconds','steps','distance','minutes','body_weight_kg','completed']];for(const r of S.records){if(r.type==='session'){let any=false;for(const [key,e] of Object.entries(r.exercises||{})){let [day,idx]=key.split(':').map(Number);for(let i=0;i<e.sets.length;i++){let s=e.sets[i];if(!valid(s.w)&&!valid(s.r))continue;rows.push([r.date,'lift',ROUTINES[day]?.name||'',ROUTINES[day]?.ex[idx]?.[0]||key,i+1,s.w??'',s.r??'','','','','',r.completed?'yes':'no']);any=true}}if(!any&&r.completed)rows.push([r.date,'workout',ROUTINES[r.day]?.name||'','','','','','','','','','yes'])}else if(r.type==='activity'){if(valid(r.steps))rows.push([r.date,'steps','','','','','',r.steps,'','','','']);for(let k of ['run','swim','cycle'])if(r[k])rows.push([r.date,k,'','','','','','',r[k].distance??'',r[k].minutes??'','',''])}else if(r.type==='body')rows.push([r.date,'body','','','','','','','',r.weight,''])}let csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');download(csv,'gym-log-export-'+dateStr(new Date())+'.csv','text/csv');toast('CSV prepared')}
+async function exportBackup(){try{await flushWrites()}catch(err){alert(err.message);return}const payload={app:'gym-log',version:1,exportedAt:new Date().toISOString(),records:S.records};download(JSON.stringify(payload),'gym-log-backup-'+dateStr(new Date())+'.json','application/json');localStorage.setItem('gym-last-backup',new Date().toISOString());render();toast('Backup prepared. Save it outside the app.')}
+const plain=o=>o!==null&&typeof o==='object'&&!Array.isArray(o);
+const finiteOrNull=v=>v==null||(typeof v==='number'&&Number.isFinite(v)&&v>=0);
+const dateValid=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(Date.parse(v+'T12:00:00'))&&dateStr(parseDate(v))===v;
+function validBackupRecord(r){
+ if(!plain(r)||typeof r.id!=='string'||r.id.length>200||!['settings','session','activity','body'].includes(r.type))return false;
+ if(r.type==='settings')return r.id==='settings'&&Number.isSafeInteger(r.goal??70000)&&(r.goal??70000)>0&&(r.reminder==null||(Number.isSafeInteger(r.reminder)&&r.reminder>0))&&['fontColor','bgColor','graphColor'].every(k=>r[k]==null||/^#[0-9a-fA-F]{6}$/.test(r[k]));
+ if(!dateValid(r.date)||r.id!==r.type+':'+r.date)return false;
+ if(r.type==='body')return typeof r.weight==='number'&&Number.isFinite(r.weight)&&r.weight>0;
+ if(r.type==='activity')return finiteOrNull(r.steps)&&(r.steps==null||Number.isSafeInteger(r.steps))&&(r.ruck==null||(plain(r.ruck)&&finiteOrNull(r.ruck.steps)&&(r.ruck.steps==null||Number.isSafeInteger(r.ruck.steps))&&finiteOrNull(r.ruck.weight)))&&['run','swim','cycle'].every(k=>r[k]==null||(plain(r[k])&&finiteOrNull(r[k].distance)&&finiteOrNull(r[k].minutes)));
+ if(r.day!=null&&(!Number.isInteger(r.day)||r.day<0||r.day>6))return false;
+ if(r.completed!=null&&typeof r.completed!=='boolean')return false;
+ if(!plain(r.exercises))return false;
+ return Object.entries(r.exercises).length<=100&&Object.entries(r.exercises).every(([key,entry])=>/^[0-6]:[0-9]+$/.test(key)&&plain(entry)&&Array.isArray(entry.sets)&&entry.sets.length<=100&&entry.sets.every(set=>plain(set)&&finiteOrNull(set.w)&&finiteOrNull(set.r))&&(entry.status==null||['progress','done','skipped'].includes(entry.status)));
+}
+async function importBackup(e){const file=e.target.files[0];if(!file)return;try{if(file.size>20*1024*1024)throw Error('Backup is too large (20 MB limit)');let p=JSON.parse(await file.text());if(p.app!=='gym-log'||p.version!==1||!Array.isArray(p.records)||p.records.length>100000||!p.records.every(validBackupRecord))throw Error('Invalid or unsupported backup');const ids=new Set(p.records.map(x=>x.id));if(ids.size!==p.records.length)throw Error('Duplicate record IDs');if(!confirm(`Backup contains ${p.records.length} records. This will REPLACE all ${S.records.length} current records. Continue?`))return;await flushWrites();await enqueueWrite(()=>tx('readwrite',store=>{store.clear();for(const r of p.records)store.put(r)}));S.records=await all();historyCache=null;unsaved.clear();writeFailed=false;document.querySelector('#save-warning')?.remove();S.settings={goal:70000,reminder:7,fontColor:'#f1f2f4',bgColor:'#101114',graphColor:'#c6d6ff',...(S.records.find(x=>x.id==='settings')||{})};applyTheme();render();toast('Backup restored')}catch(err){alert('Import failed: '+err.message)}finally{e.target.value=''}}
+async function exportCSV(){
+ try{await flushWrites()}catch(err){alert(err.message);return}
+ const cols=['date','type','day','exercise','set','weight_lb','reps_or_seconds','steps','distance','minutes','body_weight_kg','completed','ruck_steps','ruck_weight_lb'];
+ const rows=[cols];
+ const add=o=>rows.push(cols.map(k=>o[k]??''));
+ for(const r of S.records){
+   if(r.type==='session'){
+     let any=false;
+     for(const [key,entry] of Object.entries(r.exercises||{})){
+       const [day,idx]=key.split(':').map(Number);
+       for(let i=0;i<(entry.sets||[]).length;i++){
+         const set=entry.sets[i];if(!valid(set.w)&&!valid(set.r))continue;
+         add({date:r.date,type:'lift',day:ROUTINES[day]?.name||'',exercise:ROUTINES[day]?.ex[idx]?.[0]||key,set:i+1,weight_lb:set.w,reps_or_seconds:set.r,completed:r.completed?'yes':'no'});any=true;
+       }
+     }
+     if(!any&&r.completed)add({date:r.date,type:'workout',day:ROUTINES[r.day]?.name||'',completed:'yes'});
+   }else if(r.type==='activity'){
+     if(valid(r.steps))add({date:r.date,type:'steps',steps:r.steps});
+     if(r.ruck) add({date:r.date,type:'ruck',ruck_steps:r.ruck.steps,ruck_weight_lb:r.ruck.weight});
+     for(const k of ['run','swim','cycle'])if(r[k])add({date:r.date,type:k,distance:r[k].distance,minutes:r[k].minutes});
+   }else if(r.type==='body')add({date:r.date,type:'body',body_weight_kg:r.weight});
+ }
+ const csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');
+ download(csv,'gym-log-export-'+dateStr(new Date())+'.csv','text/csv');toast('CSV prepared');
+}
 function render(){if(S.tab==='gym')gym();else if(S.tab==='progress')progress();else if(S.tab==='body')body();else if(S.tab==='data')dataPage();else settingsPage()}
-async function init(){try{db=await openDB();S.records=await all();S.settings={...S.settings,...(S.records.find(x=>x.id==='settings')||{})};applyTheme();render();if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{});let last=localStorage.getItem('gym-last-backup');if(S.records.length>3&&(!last||Date.now()-new Date(last).getTime()>7*86400000))setTimeout(()=>toast('Backup reminder: export your data from the Data tab'),1500)}catch(err){$('#app').innerHTML=`<main class="app"><h1>Storage unavailable</h1><p>This app needs IndexedDB. Open it in Safari or Chrome, outside private browsing, and ensure browser storage is enabled.</p><p>${esc(err.message)}</p></main>`}}
+async function init(){try{db=await openDB();S.records=await all();S.settings={...S.settings,...(S.records.find(x=>x.id==='settings')||{})};applyTheme();render();if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').then(reg=>{document.addEventListener('visibilitychange',()=>{if(!document.hidden)reg.update().catch(()=>{})});navigator.serviceWorker.addEventListener('controllerchange',()=>{toast('App updated. Reload when convenient.');});}).catch(()=>{});let last=localStorage.getItem('gym-last-backup');if(S.records.length>3&&(!last||Date.now()-new Date(last).getTime()>(S.settings.reminder||7)*86400000))setTimeout(()=>toast('Backup reminder: export your data from the Data tab'),1500)}catch(err){$('#app').innerHTML=`<main class="app"><h1>Storage unavailable</h1><p>This app needs IndexedDB. Open it in Safari or Chrome, outside private browsing, and ensure browser storage is enabled.</p><p>${esc(err.message)}</p></main>`}}
 init();
