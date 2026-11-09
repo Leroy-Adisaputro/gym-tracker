@@ -73,3 +73,9 @@ Existing IndexedDB schema, exercise keys, and backup version remain unchanged.
 - Weekly Summary displays total rucking steps and number of logged rucking days.
 - Daily steps and rucking steps remain separate to prevent double counting.
 - Existing records, JSON backup format, and CSV export are unchanged.
+
+
+## v15 fixes
+- Day highlight now follows the selected date instead of stale initial state.
+- Weekly Progress cardio list loop now scopes each activity correctly, preventing the page from crashing.
+- Service worker cache bumped to v15 for deployment.
